@@ -1,3 +1,5 @@
+![pumpking](https://github.com/user-attachments/assets/2fd50356-7329-4415-9331-2287e061dad9)
+
 # pumpking
 
 > **P**rocessing, **U**nderstanding, and **M**odeling **P**ipeline for **K**nowledge **I**ntegration and **N**atural-language **G**eneration.
