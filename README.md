@@ -1,13 +1,6 @@
-![pumpking](https://github.com/user-attachments/assets/2fd50356-7329-4415-9331-2287e061dad9)
-
-# pumpking
-
-> **P**rocessing, **U**nderstanding, and **M**odeling **P**ipeline for **K**nowledge **I**ntegration and **N**atural-language **G**eneration.
-
-[](https://www.google.com/search?q=https://pypi.org/project/pumpking/)
-[](https://www.google.com/search?q=https://github.com/YOUR_USERNAME/pumpking/actions)
-[](https://opensource.org/licenses/MIT)
-[](https://www.google.com/search?q=https://pypi.org/project/pumpking)
+<p align="center">
+<img src="https://github.com/user-attachments/assets/2fd50356-7329-4415-9331-2287e061dad9" width="300"/>
+</p>
 
 `pumpking` is an open-source Python library designed to streamline the complex process of document chunking, parsing, and representation. It provides a flexible and powerful pipeline to transform unstructured documents into structured, queryable knowledge, ready for use with Large Language Models (LLMs).
 
