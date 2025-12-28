@@ -12,9 +12,10 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Typing :: Typed",
 ]
-# Solo Pydantic. Nada de NLTK, Spacy, Langchain, etc.
+# Dependencias: Pydantic (Core) y Markdown (Parsing robusto)
 dependencies = [
     "pydantic>=2.5.0",
+    "markdown>=3.5.0",
 ]
 
 [build-system]
