@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from pumpking.protocols import StrategyProtocol
+from pumpking.protocols import StrategyProtocol, ExecutionContext
 from pumpking.exceptions import PipelineConfigurationError
 
 
@@ -97,3 +97,34 @@ class PumpkingPipeline:
         """
         self.steps.append(next_step)
         return self
+
+    def run(self, initial_input: Any) -> Any:
+        """
+        Executes the pipeline steps sequentially.
+
+        The engine strictly passes the output of one step to the next without 
+        inference or modification.
+
+        Args:
+            initial_input: The starting data for the pipeline.
+
+        Returns:
+            The final output after the last step execution.
+        """
+        current_data = initial_input
+
+        for block in self.steps:
+            if isinstance(block, list):
+                branch_results = []
+                for step in block:
+                    context = ExecutionContext(annotators=step.annotators)
+                    result = step.strategy.execute(current_data, context)
+                    branch_results.append(result)
+                
+                current_data = branch_results
+            
+            else:
+                context = ExecutionContext(annotators=block.annotators)
+                current_data = block.strategy.execute(current_data, context)
+        
+        return current_data
