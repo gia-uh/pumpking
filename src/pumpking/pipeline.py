@@ -1,6 +1,8 @@
 from __future__ import annotations
+import uuid
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from pumpking.models import ChunkNode
 from pumpking.protocols import StrategyProtocol, ExecutionContext
 from pumpking.exceptions import PipelineConfigurationError
 
@@ -71,6 +73,22 @@ class Step:
         """
         return PumpkingPipeline([self, next_step])
 
+    def run(self, initial_input: str) -> ChunkNode:
+        """
+        Convenience method to execute this single step as if it were a pipeline.
+        
+        This allows executing atomic steps without manually wrapping them 
+        in a PumpkingPipeline container.
+
+        Args:
+            initial_input: The raw string content to start the execution.
+
+        Returns:
+            The Root ChunkNode resulting from this single step's execution.
+        """
+        # Self-wrap in a temporary pipeline to reuse the execution logic
+        return PumpkingPipeline([self]).run(initial_input)
+
 
 class PumpkingPipeline:
     """
@@ -98,33 +116,69 @@ class PumpkingPipeline:
         self.steps.append(next_step)
         return self
 
-    def run(self, initial_input: Any) -> Any:
+    def run(self, initial_input: str) -> ChunkNode:
         """
-        Executes the pipeline steps sequentially.
+        Executes the pipeline, building a hierarchical tree of ChunkNodes.
 
-        The engine strictly passes the output of one step to the next without 
-        inference or modification.
+        The pipeline manages the context:
+        1. Creates a Root Node with initial_input.
+        2. Iterates through steps. Each step reads from the current frontier of nodes.
+        3. Strategies process content -> Pipeline converts output to NEW child nodes.
+        4. Annotators run on the NEW child nodes.
+        5. The frontier advances to these new nodes.
 
         Args:
-            initial_input: The starting data for the pipeline.
+            initial_input: The raw string content to start the pipeline.
 
         Returns:
-            The final output after the last step execution.
+            The Root ChunkNode.
         """
-        current_data = initial_input
+        root_node = ChunkNode(
+            id=str(uuid.uuid4()),
+            content=initial_input,
+            parent_id=None
+        )
+        
+        current_frontier: List[ChunkNode] = [root_node]
 
         for block in self.steps:
-            if isinstance(block, list):
-                branch_results = []
-                for step in block:
-                    context = ExecutionContext(annotators=step.annotators)
-                    result = step.strategy.execute(current_data, context)
-                    branch_results.append(result)
-                
-                current_data = branch_results
+            next_frontier: List[ChunkNode] = []
             
-            else:
-                context = ExecutionContext(annotators=block.annotators)
-                current_data = block.strategy.execute(current_data, context)
+            steps_to_execute = block if isinstance(block, list) else [block]
+            
+            for parent_node in current_frontier:
+                for step in steps_to_execute:
+                    context = ExecutionContext() 
+                    raw_output = step.strategy.execute(parent_node.content, context)
+                    
+                    output_items = raw_output if isinstance(raw_output, list) else [raw_output]
+                    
+                    for item in output_items:
+                        content_str = str(item)
+                        
+                        child_node = ChunkNode(
+                            id=str(uuid.uuid4()),
+                            content=content_str,
+                            parent_id=parent_node.id
+                        )
+                        
+                        self._apply_step_annotators(step, child_node)
+                        
+                        next_frontier.append(child_node)
+            
+            if next_frontier:
+                current_frontier = next_frontier
         
-        return current_data
+        return root_node
+
+    def _apply_step_annotators(self, step: Step, node: ChunkNode) -> None:
+        """
+        Executes the step's annotators on the newly created node.
+        """
+        if not step.annotators:
+            return
+
+        for alias, annotator in step.annotators.items():
+            context = ExecutionContext()
+            annotation_result = annotator.execute(node.content, context)
+            node.annotations[alias] = annotation_result

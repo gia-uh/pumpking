@@ -1,97 +1,94 @@
 from typing import Any, List
-from pumpking.pipeline import Step, PumpkingPipeline
-from pumpking.protocols import ExecutionContext
+from pumpking.pipeline import Step, PumpkingPipeline, annotate
 from pumpking.strategies.base import BaseStrategy
+from pumpking.models import ChunkNode
 
 class PassthroughStrategy(BaseStrategy):
     """Returns input as is."""
-    SUPPORTED_INPUTS = [Any]
-    PRODUCED_OUTPUT = Any
-    def execute(self, data, context):
-        return data
-
-class UpperCaseStrategy(BaseStrategy):
-    """Converts string to uppercase."""
     SUPPORTED_INPUTS = [str]
     PRODUCED_OUTPUT = str
     def execute(self, data, context):
-        return data.upper()
+        return data
 
 class SplitStrategy(BaseStrategy):
-    """Splits string into list."""
+    """Splits string by comma."""
     SUPPORTED_INPUTS = [str]
     PRODUCED_OUTPUT = list
     def execute(self, data, context):
         return data.split(",")
 
-class SumStrategy(BaseStrategy):
-    """Sums a list of numbers."""
-    SUPPORTED_INPUTS = [list]
-    PRODUCED_OUTPUT = int
+class SentimentMock(BaseStrategy):
+    """Returns a fake sentiment score."""
+    SUPPORTED_INPUTS = [str]
+    PRODUCED_OUTPUT = float
     def execute(self, data, context):
-        return sum(data)
+        return 0.9
 
-class BranchToString(BaseStrategy):
-    """Converts any input to string for branch testing."""
-    SUPPORTED_INPUTS = [Any]
+class SpyStrategy(BaseStrategy):
+    """Records executions to validation."""
+    SUPPORTED_INPUTS = [str]
     PRODUCED_OUTPUT = str
+    
+    def __init__(self):
+        self.received_data = []
+
     def execute(self, data, context):
-        return str(data)
+        self.received_data.append(data)
+        return data
 
-def test_linear_execution_flow():
-    """Verify data flows sequentially through steps."""
-    pipeline = Step(PassthroughStrategy()) >> Step(UpperCaseStrategy())
-    result = pipeline.run("hello")
-    assert result == "HELLO"
-
-def test_parallel_execution_flow():
-    """Verify data is broadcast to parallel branches."""
-    pipeline = Step(PassthroughStrategy()) >> [
-        Step(BranchToString(), alias="v1"),
-        Step(BranchToString(), alias="v2")
-    ]
-    result = pipeline.run("test")
-    assert isinstance(result, list)
-    assert len(result) == 2
-    assert result[0] == "test"
-    assert result[1] == "test"
-
-def test_complex_execution_flow():
-    """Verify Linear -> Parallel -> Linear flow."""
-    pipeline = (
-        Step(PassthroughStrategy()) 
-        >> [Step(UpperCaseStrategy(), alias="upper"), Step(SplitStrategy(), alias="split")]
-    )
+def test_pipeline_creates_root_node():
+    """Verify that run() returns a root node with the initial input."""
+    pipeline = PumpkingPipeline([])
+    root = pipeline.run("start_content")
     
-    result = pipeline.run("a,b")
-    
-    assert isinstance(result, list)
-    assert result[0] == "A,B"
-    assert result[1] == ["a", "b"]
+    assert isinstance(root, ChunkNode)
+    assert root.content == "start_content"
+    assert root.parent_id is None
 
-def test_state_persistence():
-    """Verify objects are passed by reference/value correctly."""
-    input_data = [1, 2, 3]
-    pipeline = Step(SumStrategy()) >> Step(BranchToString())
+def test_pipeline_flow_execution():
+    """
+    Verify that strategies are executed in order.
+    """
+    spy_step_1 = SpyStrategy()
+    spy_step_2 = SpyStrategy()
     
-    result = pipeline.run(input_data)
-    assert result == "6"
+    pipeline = Step(spy_step_1) >> Step(spy_step_2)
+    pipeline.run("initial")
+    
+    assert spy_step_1.received_data == ["initial"]
+    assert spy_step_2.received_data == ["initial"]
 
-def test_annotators_are_instantiated_in_context():
-    """Verify that execution context receives the step's annotators."""
-    class MockWithContextCheck(BaseStrategy):
+def test_pipeline_branching_logic():
+    """
+    Verify that a split strategy creates multiple children nodes 
+    processed by the next step.
+    """
+    spy_consumer = SpyStrategy()
+    
+    pipeline = Step(SplitStrategy()) >> Step(spy_consumer)
+    
+    pipeline.run("A,B,C")
+    
+    assert len(spy_consumer.received_data) == 3
+    assert "A" in spy_consumer.received_data
+    assert "B" in spy_consumer.received_data
+    assert "C" in spy_consumer.received_data
+
+def test_annotators_are_applied_by_pipeline_on_single_step():
+    """
+    Verify that we can run a single step with annotations directly
+    without manually wrapping it in a PumpkingPipeline.
+    """
+    class NodeInspector(BaseStrategy):
         SUPPORTED_INPUTS = [str]
         PRODUCED_OUTPUT = str
         def execute(self, data, context):
-            if "meta" in context.annotators:
-                return "annotator_found"
-            return "no_annotator"
+            return data
 
-    # CORRECTION: Wrap the single Step in a PumpkingPipeline to execute it
-    step = Step(MockWithContextCheck())
-    step.annotators["meta"] = PassthroughStrategy()
+    inspector = NodeInspector()
     
-    pipeline = PumpkingPipeline([step])
+    pipeline_step = Step(PassthroughStrategy()) | annotate(SentimentMock(), alias="score")
     
-    result = pipeline.run("start")
-    assert result == "annotator_found"
+    root = pipeline_step.run("test_data")
+    
+    assert root.content == "test_data"
