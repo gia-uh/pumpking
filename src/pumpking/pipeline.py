@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pumpking.protocols import StrategyProtocol
+from pumpking.exceptions import PipelineConfigurationError
 
 
 def annotate(strategy: StrategyProtocol, alias: Optional[str] = None) -> Tuple[str, StrategyProtocol]:
@@ -45,8 +46,16 @@ class Step:
 
         Returns:
             self: Returns the same Step instance to allow chaining.
+        
+        Raises:
+            PipelineConfigurationError: If an annotator with the same alias already exists.
         """
         alias, strategy = annotation
+        if alias in self.annotators:
+            raise PipelineConfigurationError(
+                f"Duplicate annotator alias '{alias}' found in step '{self.alias}'. "
+                "Annotator aliases must be unique within a step."
+            )
         self.annotators[alias] = strategy
         return self
 

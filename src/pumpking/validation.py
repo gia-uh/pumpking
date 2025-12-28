@@ -1,4 +1,4 @@
-from typing import Any, List, Union, Type
+from typing import Any, List, Union, Set
 
 from pumpking.pipeline import PumpkingPipeline, Step
 from pumpking.exceptions import PipelineConfigurationError
@@ -6,25 +6,26 @@ from pumpking.exceptions import PipelineConfigurationError
 
 def validate(pipeline: PumpkingPipeline) -> None:
     """
-    Validates the type compatibility of a PumpkingPipeline before execution.
+    Validates the type compatibility and structural integrity of a PumpkingPipeline.
 
-    Traverses the pipeline steps and ensures that the output produced by step N
-    is compatible with the input supported by step N+1. It also validates that
-    annotators attached to a step are compatible with string input (default for content).
+    Checks:
+    1. Internal Integrity: Validates annotators and unique aliases in parallel blocks.
+    2. Sequence Compatibility: Ensures output types match input types between steps.
 
     Args:
         pipeline: The pipeline instance to validate.
 
     Raises:
-        PipelineConfigurationError: If a type mismatch is detected.
+        PipelineConfigurationError: If a configuration error is detected.
     """
     steps = pipeline.steps
     if not steps:
         return
 
-    # 1. Validate Internal Integrity (Annotators)
+    # 1. Validate Internal Integrity
     for step_block in steps:
         _validate_block_annotators(step_block)
+        _validate_unique_aliases(step_block)
 
     # 2. Validate Sequence Compatibility (Step N -> Step N+1)
     for i in range(len(steps) - 1):
@@ -47,7 +48,6 @@ def _validate_block_annotators(block: Union[Step, List[Step]]) -> None:
 def _check_annotator_compatibility(step: Step) -> None:
     """
     Verifies that registered annotators support 'str' input.
-    Pumpking annotators typically operate on the 'content' of a ChunkNode (str).
     """
     for alias, annotator in step.annotators.items():
         if str not in annotator.SUPPORTED_INPUTS:
@@ -57,10 +57,27 @@ def _check_annotator_compatibility(step: Step) -> None:
             )
 
 
+def _validate_unique_aliases(block: Union[Step, List[Step]]) -> None:
+    """
+    Ensures that all steps within a parallel block have unique aliases.
+    Duplicate aliases in parallel execution would cause data overwrites during merging.
+    """
+    if not isinstance(block, list):
+        return
+
+    seen_aliases: Set[str] = set()
+    for step in block:
+        if step.alias in seen_aliases:
+            raise PipelineConfigurationError(
+                f"Duplicate step alias '{step.alias}' found in parallel block. "
+                "Sibling steps must have unique aliases to merge results correctly."
+            )
+        seen_aliases.add(step.alias)
+
+
 def _get_block_output_type(block: Union[Step, List[Step]]) -> Any:
     """
-    Determines the output type of a block (Single Step or Parallel List).
-    If it's a parallel list, the output is a standard Python list containing results.
+    Determines the output type of a block.
     """
     if isinstance(block, list):
         return list
