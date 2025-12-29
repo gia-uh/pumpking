@@ -150,3 +150,62 @@ class SlidingWindowChunking(BaseStrategy):
                 break
 
         return chunks
+    
+class AdaptiveChunking(RegexChunking):
+    """
+    Groups sentences into chunks within a character limit range.
+
+    This strategy leverages regex splitting to identify sentence boundaries
+    and then aggregates them into larger chunks. It prevents running annotators
+    on individual sentences by using an empty execution context for the
+    initial split, applying them only to the final aggregated chunks.
+    """
+    def __init__(self, min_chunk_size: int, max_chunk_size: int) -> None:
+        super().__init__(pattern=r"(?<=[.!?])\s+")
+        if min_chunk_size <= 0:
+            raise ValueError("min_chunk_size must be positive")
+        if max_chunk_size < min_chunk_size:
+            raise ValueError("max_chunk_size must be greater than or equal to min_chunk_size")
+
+        self.min_chunk_size = min_chunk_size
+        self.max_chunk_size = max_chunk_size
+
+    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+        empty_context = ExecutionContext()
+        sentences = super().execute(data, empty_context)
+        
+        chunks = []
+        current_buffer = []
+        current_len = 0
+
+        for sentence_payload in sentences:
+            content = sentence_payload.content
+            add_len = len(content)
+            sep_len = 1 if current_buffer else 0
+            
+            projected_len = current_len + sep_len + add_len
+
+            if projected_len > self.max_chunk_size and current_buffer:
+                self._emit_buffer(chunks, current_buffer, context)
+                current_buffer = [content]
+                current_len = add_len
+            else:
+                current_buffer.append(content)
+                current_len = projected_len
+
+        if current_buffer:
+            self._emit_buffer(chunks, current_buffer, context)
+
+        return chunks
+
+    def _emit_buffer(self, chunks: List[ChunkPayload], buffer: List[str], context: ExecutionContext) -> None:
+        raw_text = " ".join(buffer)
+        cleaned_content = clean_text(raw_text)
+        
+        if cleaned_content:
+            payload = self._apply_annotators_to_payload(
+                content=cleaned_content,
+                context=context,
+                content_raw=raw_text
+            )
+            chunks.append(payload)
