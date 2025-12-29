@@ -33,12 +33,6 @@ class PumpkingBaseModel(BaseModel):
 class ChunkPayload(PumpkingBaseModel):
     """
     Transport object returned by Strategies.
-    
-    Attributes:
-        content (Optional[str]): The processed/cleaned text content.
-        content_raw (Optional[str]): The original text content before cleaning, if different.
-        annotations (Dict[str, Any]): Metadata or analysis results attached to this chunk.
-        children (Optional[List[ChunkPayload]]): Nested chunks for hierarchical structures.
     """
     content: Optional[str] = None
     content_raw: Optional[str] = None
@@ -49,14 +43,6 @@ class ChunkPayload(PumpkingBaseModel):
 class ChunkNode(PumpkingBaseModel):
     """
     A node in the processing graph representing a state in the pipeline history.
-    
-    Attributes:
-        id (uuid.UUID): Unique identifier for the node.
-        parent_id (Optional[uuid.UUID]): Reference to the source node.
-        content (Optional[str]): The processed text.
-        content_raw (Optional[str]): The original text, stored only if different from content.
-        annotations (Dict[str, Any]): Metadata attached during the strategy execution.
-        children (Optional[List[ChunkNode]]): Nested nodes representing the tree structure.
     """
     id: uuid.UUID = Field(default_factory=uuid.uuid4)
     parent_id: Optional[uuid.UUID] = None

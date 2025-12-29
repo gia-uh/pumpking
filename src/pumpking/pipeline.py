@@ -10,13 +10,6 @@ from pumpking.exceptions import PipelineConfigurationError
 def annotate(strategy: StrategyProtocol, alias: Optional[str] = None) -> Tuple[str, StrategyProtocol]:
     """
     Helper function to create an annotation definition for the pipeline syntax.
-    
-    Args:
-        strategy (StrategyProtocol): The strategy to use for annotation.
-        alias (Optional[str]): An explicit name for the annotation key.
-    
-    Returns:
-        Tuple[str, StrategyProtocol]: The (alias, strategy) pair.
     """
     final_alias = alias or strategy.__class__.__name__
     return (final_alias, strategy)
@@ -25,8 +18,6 @@ def annotate(strategy: StrategyProtocol, alias: Optional[str] = None) -> Tuple[s
 class Step:
     """
     Represents a single processing step in the pipeline.
-    
-    Allows attaching annotators using the bitwise OR operator (|).
     """
     def __init__(self, strategy: StrategyProtocol, alias: Optional[str] = None) -> None:
         self.strategy = strategy
@@ -68,12 +59,6 @@ class PumpkingPipeline:
     def run(self, initial_input: str) -> DocumentRoot:
         """
         Executes the entire pipeline on the input string.
-        
-        Args:
-            initial_input (str): The raw document text to process.
-            
-        Returns:
-            DocumentRoot: The root container of the resulting document tree.
         """
         root_node = ChunkNode(
             id=str(uuid.uuid4()),

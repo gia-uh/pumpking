@@ -14,7 +14,6 @@ from pumpking.strategies.basic import (
     AdaptiveChunking
 )
 from pumpking.strategies.advanced import HierarchicalChunking
-from pumpking.strategies.basic import ParagraphChunking, SentenceChunking
 
 COMPLEX_MARKDOWN = """# System Architecture
 
@@ -279,10 +278,6 @@ def test_sliding_window_validation():
         pass
     
 def test_sliding_window_on_complex_markdown():
-    """
-    Verifies SlidingWindowChunking behavior on the shared complex markdown sample.
-    Checks that the text is traversed and windowed correctly across markdown syntax.
-    """
     strategy = SlidingWindowChunking(window_size=15, overlap=5)
     context = ExecutionContext()
     
@@ -302,9 +297,6 @@ def test_sliding_window_on_complex_markdown():
     assert "API Gateway" in combined_content
     
 def test_adaptive_chunking_merges_short_sentences():
-    """
-    Verifies that short sentences are merged to meet the minimum chunk size.
-    """
     strategy = AdaptiveChunking(min_chunk_size=25, max_chunk_size=100)
     context = ExecutionContext()
     text = "Short one. Short two. Short three."
@@ -315,9 +307,6 @@ def test_adaptive_chunking_merges_short_sentences():
     assert results[0].content == "Short one. Short two. Short three."
 
 def test_adaptive_chunking_respects_max_limit():
-    """
-    Verifies that chunks are split when adding another sentence would exceed the maximum size.
-    """
     strategy = AdaptiveChunking(min_chunk_size=10, max_chunk_size=20)
     context = ExecutionContext()
     text = "First sentence is long. Second sentence is also long."
@@ -329,11 +318,6 @@ def test_adaptive_chunking_respects_max_limit():
     assert results[1].content == "Second sentence is also long."
 
 def test_adaptive_chunking_on_complex_markdown():
-    """
-    Verifies AdaptiveChunking behavior on complex markdown.
-    It should group the header (which lacks punctuation) with the following sentence,
-    creating coherent blocks.
-    """
     strategy = AdaptiveChunking(min_chunk_size=50, max_chunk_size=200)
     context = ExecutionContext()
     
@@ -350,9 +334,6 @@ def test_adaptive_chunking_on_complex_markdown():
     assert "Warning: This module is deprecated." in combined_content
 
 def test_adaptive_chunking_validation_error():
-    """
-    Verifies parameter validation logic.
-    """
     try:
         AdaptiveChunking(min_chunk_size=100, max_chunk_size=50)
         assert False
