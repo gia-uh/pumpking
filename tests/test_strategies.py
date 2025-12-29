@@ -1,9 +1,11 @@
+import pytest
+
 from typing import List, Any
 from pumpking.models import ChunkPayload
 from pumpking.pipeline import Step
 from pumpking.protocols import ExecutionContext
 from pumpking.strategies.base import BaseStrategy
-from pumpking.strategies.basic import RegexChunking
+from pumpking.strategies.basic import RegexChunking, FixedSizeChunking
 
 COMPLEX_MARKDOWN = """# System Architecture
 
@@ -73,3 +75,44 @@ def test_regex_chunking_pipeline_integration_flow():
 
     assert spy.received_chunks[0] == "# System Architecture"
     assert "microservices" in spy.received_chunks[1]
+    
+def test_fixed_size_chunking_cuts_structure_blindly():
+    chunk_size = 20
+    strategy = FixedSizeChunking(chunk_size=chunk_size, overlap=0)
+    context = ExecutionContext()
+    
+    payloads = strategy.execute(COMPLEX_MARKDOWN, context)
+    
+    assert len(payloads) > 0
+    assert payloads[0].content == "# System Architectur"
+    assert payloads[1].content == "e\n\nThe system is bui"
+
+def test_fixed_size_chunking_overlap_consistency():
+    chunk_size = 50
+    overlap = 10
+    strategy = FixedSizeChunking(chunk_size=chunk_size, overlap=overlap)
+    context = ExecutionContext()
+    
+    payloads = strategy.execute(COMPLEX_MARKDOWN, context)
+    
+    first_chunk_end = payloads[0].content[-overlap:]
+    second_chunk_start = payloads[1].content[:overlap]
+    
+    assert first_chunk_end == second_chunk_start
+
+def test_fixed_size_chunking_preserves_total_content():
+    chunk_size = 100
+    strategy = FixedSizeChunking(chunk_size=chunk_size, overlap=0)
+    context = ExecutionContext()
+    
+    payloads = strategy.execute(COMPLEX_MARKDOWN, context)
+    
+    reconstructed = "".join([p.content for p in payloads])
+    assert reconstructed == COMPLEX_MARKDOWN
+
+def test_fixed_size_chunking_validation_error():
+    with pytest.raises(ValueError):
+        FixedSizeChunking(chunk_size=0)
+    
+    with pytest.raises(ValueError):
+        FixedSizeChunking(chunk_size=5, overlap=6)
