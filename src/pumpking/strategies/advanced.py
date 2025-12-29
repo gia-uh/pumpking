@@ -1,10 +1,11 @@
 import markdown
 from html.parser import HTMLParser
-from typing import List, Optional, Any
+from typing import List, Optional
 
-from pumpking.models import ChunkPayload
-from pumpking.protocols import ExecutionContext
+from pumpking.models import NERResult, ChunkPayload, ChunkNode
+from pumpking.protocols import ExecutionContext, NERProviderProtocol
 from pumpking.strategies.base import BaseStrategy
+from pumpking.strategies.providers import LLMProvider
 from pumpking.utils import clean_text
 
 
@@ -148,3 +149,80 @@ class HierarchicalChunking(BaseStrategy):
                     chunk.children = children
         
         return chunks
+    
+class EntityBasedChunking(BaseStrategy):
+    """
+    Strategy that groups text by entities using a NER provider (LLMProvider) and positional indices.
+    It uses the shared utility for text cleaning.
+    """
+    def __init__(self, ner_provider: Optional[NERProviderProtocol] = None) -> None:
+        self.ner_provider = ner_provider or LLMProvider()
+
+    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+        """
+        Executes the entity-based chunking logic using reconciliation and standard cleaning.
+        """
+        raw_segments = [s.strip() for s in data.split('.') if s.strip()]
+        
+        if not raw_segments:
+            return []
+
+        clean_segments = [clean_text(s) for s in raw_segments]
+
+        ner_results = self.ner_provider.analyze(clean_segments)
+        
+        entity_payloads = []
+        
+        for result in ner_results:
+            child_payloads = []
+            
+            for index in result.indices:
+                if 0 <= index < len(raw_segments):
+                    raw_text = raw_segments[index]
+                    clean_segment_text = clean_segments[index]
+                    
+                    child = self._apply_annotators_to_payload(
+                        content=clean_segment_text,
+                        context=context,
+                        content_raw=raw_text
+                    )
+                    child_payloads.append(child)
+            
+            if child_payloads:
+                entity_node = EntityChunkPayload(
+                    entity=result.entity,
+                    type=result.label,
+                    content=None,
+                    children=child_payloads
+                )
+                entity_payloads.append(entity_node)
+            
+        return entity_payloads
+    
+    def to_node(self, payload: ChunkPayload) -> ChunkNode:
+        """
+        Converts specialized payloads to specialized nodes.
+        """
+        if isinstance(payload, EntityChunkPayload):
+            children_nodes = []
+            if payload.children:
+                children_nodes = [
+                    chunk.to_node() if hasattr(chunk, 'to_node') else ChunkNode(
+                        content=chunk.content,
+                        content_raw=chunk.content_raw,
+                        annotations=chunk.annotations,
+                        children=[]
+                    )
+                    for chunk in payload.children
+                ]
+
+            return EntityChunkNode(
+                entity=payload.entity,
+                type=payload.type,
+                content=payload.content,
+                content_raw=payload.content_raw,
+                annotations=payload.annotations,
+                children=children_nodes
+            )
+        
+        return super().to_node(payload)

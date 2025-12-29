@@ -30,6 +30,15 @@ class PumpkingBaseModel(BaseModel):
         return data
 
 
+class NERResult(BaseModel):
+    """
+    Represents a detected entity and the indices of the sentences associated with it.
+    """
+    entity: str
+    label: str
+    indices: List[int]
+
+
 class ChunkPayload(PumpkingBaseModel):
     """
     Transport object returned by Strategies.
@@ -38,6 +47,16 @@ class ChunkPayload(PumpkingBaseModel):
     content_raw: Optional[str] = None
     annotations: Dict[str, Any] = Field(default_factory=dict)
     children: Optional[List["ChunkPayload"]] = None
+
+
+class EntityChunkPayload(ChunkPayload):
+    """
+    Specialized payload for Entity nodes.
+    """
+    entity: str
+    type: str
+    content: Optional[str] = None
+    content_raw: Optional[str] = None
 
 
 class ChunkNode(PumpkingBaseModel):
@@ -57,6 +76,16 @@ class ChunkNode(PumpkingBaseModel):
         if self.content_raw == self.content:
             self.content_raw = None
         return self
+
+
+class EntityChunkNode(ChunkNode):
+    """
+    Specialized node for persisting Entity information.
+    """
+    entity: str
+    type: str
+    content: Optional[str] = None
+    content_raw: Optional[str] = None
 
 
 class DocumentRoot(PumpkingBaseModel):
