@@ -91,7 +91,6 @@ class FixedSizeChunking(BaseStrategy):
         
         return chunks
 
-
 class ParagraphChunking(RegexChunking):
     """
     Specialized RegexChunking that splits text by double newlines.
@@ -106,3 +105,48 @@ class SentenceChunking(RegexChunking):
     """
     def __init__(self) -> None:
         super().__init__(pattern=r"(?<=[.!?])\s+")
+        
+class SlidingWindowChunking(BaseStrategy):
+    """
+    Splits text into fixed-size word windows with overlap.
+    """
+    def __init__(self, window_size: int, overlap: int) -> None:
+        if window_size <= 0:
+            raise ValueError("window_size must be positive")
+        if overlap < 0:
+            raise ValueError("overlap must be non-negative")
+        if overlap >= window_size:
+            raise ValueError("overlap must be strictly less than window_size")
+
+        self.window_size = window_size
+        self.overlap = overlap
+
+    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+        if not data:
+            return []
+
+        words = data.split()
+        if not words:
+            return []
+
+        step = self.window_size - self.overlap
+        chunks = []
+
+        for i in range(0, len(words), step):
+            window = words[i : i + self.window_size]
+            raw_content = " ".join(window)
+            
+            cleaned_content = clean_text(raw_content)
+
+            if cleaned_content:
+                payload = self._apply_annotators_to_payload(
+                    content=cleaned_content,
+                    context=context,
+                    content_raw=raw_content
+                )
+                chunks.append(payload)
+            
+            if i + self.window_size >= len(words):
+                break
+
+        return chunks

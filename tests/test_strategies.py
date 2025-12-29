@@ -9,7 +9,8 @@ from pumpking.strategies.basic import (
     RegexChunking,
     FixedSizeChunking,
     ParagraphChunking,
-    SentenceChunking
+    SentenceChunking,
+    SlidingWindowChunking
 )
 
 COMPLEX_MARKDOWN = """# System Architecture
@@ -244,3 +245,55 @@ def test_sentence_chunking_on_complex_markdown():
     
     assert any("Supports OAuth2." in c for c in contents)
     assert any("This module is deprecated." in c for c in contents)
+    
+def test_sliding_window_logic():
+    strategy = SlidingWindowChunking(window_size=3, overlap=1)
+    context = ExecutionContext()
+    text = "one two three four five"
+    
+    results = strategy.execute(text, context)
+    
+    assert len(results) == 2
+    assert results[0].content == "one two three"
+    assert results[1].content == "three four five"
+
+def test_sliding_window_cleaning():
+    strategy = SlidingWindowChunking(window_size=3, overlap=0)
+    context = ExecutionContext()
+    
+    text = "word1   word2 word3" 
+    
+    results = strategy.execute(text, context)
+    
+    assert len(results) == 1
+    assert results[0].content == "word1 word2 word3"
+
+def test_sliding_window_validation():
+    try:
+        SlidingWindowChunking(window_size=5, overlap=5)
+        assert False, "Should raise ValueError for overlap >= window_size"
+    except ValueError:
+        pass
+    
+def test_sliding_window_on_complex_markdown():
+    """
+    Verifies SlidingWindowChunking behavior on the shared complex markdown sample.
+    Checks that the text is traversed and windowed correctly across markdown syntax.
+    """
+    strategy = SlidingWindowChunking(window_size=15, overlap=5)
+    context = ExecutionContext()
+    
+    payloads = strategy.execute(COMPLEX_MARKDOWN, context)
+    
+    assert len(payloads) >= 3
+    
+    first_chunk = payloads[0].content
+    assert "System Architecture" in first_chunk
+    assert "microservices" in first_chunk
+    
+    last_chunk = payloads[-1].content
+    assert "deprecated" in last_chunk
+    
+    combined_content = " ".join([p.content for p in payloads])
+    assert "OAuth2" in combined_content
+    assert "API Gateway" in combined_content
