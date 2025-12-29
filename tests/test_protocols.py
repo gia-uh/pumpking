@@ -1,5 +1,5 @@
 from typing import Any, List
-from pumpking.models import ChunkNode
+from pumpking.models import ChunkPayload
 from pumpking.protocols import ExecutionContext, StrategyProtocol
 from pumpking.strategies.base import BaseStrategy
 
@@ -11,18 +11,19 @@ class MockAnnotator(BaseStrategy):
         return f"Annotated: {data}"
 
 class MockChunkingStrategy(BaseStrategy):
-    """Mock strategy using default types."""
+    """Mock strategy using default types (List[ChunkPayload])."""
 
-    def execute(self, data: Any, context: ExecutionContext) -> List[ChunkNode]:
-        node = ChunkNode(content=str(data))
-        self._apply_annotators_to_list([node], context)
-        return [node]
+    def execute(self, data: Any, context: ExecutionContext) -> List[ChunkPayload]:
+        # CORRECTED: Use the helper to process strings into Payloads
+        # We pass a list of strings [str(data)]
+        return self._apply_annotators_to_list([str(data)], context)
 
 def test_protocol_uses_real_types():
     """Verify that attributes are real types."""
     assert str in MockChunkingStrategy.SUPPORTED_INPUTS
     assert list[str] in MockChunkingStrategy.SUPPORTED_INPUTS
-    assert MockChunkingStrategy.PRODUCED_OUTPUT == list[ChunkNode]
+    # CORRECTED: Strategies now produce ChunkPayload, not ChunkNode
+    assert MockChunkingStrategy.PRODUCED_OUTPUT == List[ChunkPayload]
 
 def test_type_compatibility_check():
     """Simulate the Static Validator logic with types."""
@@ -39,5 +40,7 @@ def test_helper_execution_flow():
 
     result = host.execute("Test", context)
 
+    # CORRECTED: Assertions on ChunkPayload
     assert len(result) == 1
+    assert isinstance(result[0], ChunkPayload)
     assert result[0].annotations["meta"] == "Annotated: Test"
