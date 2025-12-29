@@ -2,13 +2,14 @@ import pytest
 
 from typing import List, Any
 from pumpking.models import ChunkPayload
-from pumpking.pipeline import Step
+from pumpking.pipeline import annotate, Step
 from pumpking.protocols import ExecutionContext
 from pumpking.strategies.base import BaseStrategy
 from pumpking.strategies.basic import (
     RegexChunking,
     FixedSizeChunking,
     ParagraphChunking,
+    SentenceChunking
 )
 
 COMPLEX_MARKDOWN = """# System Architecture
@@ -190,3 +191,56 @@ def test_paragraph_chunking_structure_preservation():
     assert '"source": "Client"' in payloads[5].content
 
     assert payloads[7].content == "> Warning: This module is deprecated."
+    
+def test_sentence_chunking_basic():
+    strategy = SentenceChunking()
+    context = ExecutionContext()
+    text = "Hello world. This is a test! Is it working? Yes."
+    results = strategy.execute(text, context)
+
+    assert len(results) == 4
+    assert results[0].content == "Hello world."
+    assert results[1].content == "This is a test!"
+    assert results[2].content == "Is it working?"
+    assert results[3].content == "Yes."
+
+def test_pipeline_paragraph_to_sentence_structure():
+    spy = SpyStrategy()
+    pipeline = Step(ParagraphChunking()) >> Step(SentenceChunking()) >> Step(spy)
+    
+    text = "Para 1 Sentence 1. Para 1 Sentence 2.\n\nPara 2 Sentence 1."
+    pipeline.run(text)
+    
+    assert len(spy.received_chunks) == 3
+    assert "Para 1 Sentence 1." in spy.received_chunks
+    assert "Para 1 Sentence 2." in spy.received_chunks
+    assert "Para 2 Sentence 1." in spy.received_chunks
+
+def test_paragraph_annotated_with_sentences():
+    strategy = ParagraphChunking()
+    context = ExecutionContext(annotators={"sentences": SentenceChunking()})
+    text = "Block A. Block B.\n\nBlock C."
+    
+    results = strategy.execute(text, context)
+    
+    assert len(results) == 2
+    assert results[0].content == "Block A. Block B."
+    
+    assert "sentences" in results[0].annotations
+    sentences_list = results[0].annotations["sentences"]
+    assert len(sentences_list) == 2
+    assert sentences_list[0].content == "Block A."
+    assert sentences_list[1].content == "Block B."
+
+def test_sentence_chunking_on_complex_markdown():
+    strategy = SentenceChunking()
+    context = ExecutionContext()
+    
+    payloads = strategy.execute(COMPLEX_MARKDOWN, context)
+    
+    assert len(payloads) > 1
+    
+    contents = [p.content for p in payloads]
+    
+    assert any("Supports OAuth2." in c for c in contents)
+    assert any("This module is deprecated." in c for c in contents)

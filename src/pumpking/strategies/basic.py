@@ -99,3 +99,10 @@ class ParagraphChunking(RegexChunking):
     """
     def __init__(self) -> None:
         super().__init__(pattern=r"\n\n+")
+        
+class SentenceChunking(RegexChunking):
+    """
+    Splits text into sentences based on punctuation boundaries using a lookbehind pattern.
+    """
+    def __init__(self) -> None:
+        super().__init__(pattern=r"(?<=[.!?])\s+")

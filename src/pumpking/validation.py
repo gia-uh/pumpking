@@ -69,7 +69,6 @@ def _validate_connection(output_type: Any, next_block: Union[Step, List[Step]], 
     if isinstance(next_block, list):
         for branch_idx, step in enumerate(next_block):
             if not is_compatible(output_type, step.strategy.SUPPORTED_INPUTS):
-                # RESTORED: Detailed error message
                 raise PipelineConfigurationError(
                     f"Type Mismatch at Step {step_index} -> {step_index + 1} (Branch {branch_idx}): "
                     f"Previous step produces '{output_type}', but "
@@ -77,7 +76,6 @@ def _validate_connection(output_type: Any, next_block: Union[Step, List[Step]], 
                 )
     else:
         if not is_compatible(output_type, next_block.strategy.SUPPORTED_INPUTS):
-            # RESTORED: Detailed error message
             raise PipelineConfigurationError(
                 f"Type Mismatch at Step {step_index} -> {step_index + 1}: "
                 f"Previous step produces '{output_type}', but "
