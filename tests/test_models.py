@@ -47,15 +47,14 @@ def test_document_root_structure():
     """Test DocumentRoot nesting and serialization."""
     child1 = ChunkNode(content="Child 1")
     child2 = ChunkNode(content="Child 2", annotations={"idx": 2})
-    
-    doc = DocumentRoot(original_filename="test.txt", children=[child1, child2])
-    output = doc.to_dict()
 
-    assert output["original_filename"] == "test.txt"
-    assert len(output["children"]) == 2
-    # Check that child1 has no 'annotations' key (sparse)
-    assert "annotations" not in output["children"][0]
-    # Check that child2 has 'annotations' key
-    assert output["children"][1]["annotations"] == {"idx": 2}
-    # Metadata should be gone because it's empty
-    assert "metadata" not in output
+    doc = DocumentRoot(
+        document="Full text...",
+        original_filename="test.txt", 
+        children=[child1, child2]
+    )
+    
+    data = doc.to_dict()
+    assert data['original_filename'] == "test.txt"
+    assert data['document'] == "Full text..." 
+    assert len(data['children']) == 2

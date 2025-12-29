@@ -35,12 +35,12 @@ class ChunkPayload(PumpkingBaseModel):
     Transport object returned by Strategies.
     
     Attributes:
-        content (str): The processed/cleaned text content.
+        content (Optional[str]): The processed/cleaned text content.
         content_raw (Optional[str]): The original text content before cleaning, if different.
         annotations (Dict[str, Any]): Metadata or analysis results attached to this chunk.
         children (Optional[List[ChunkPayload]]): Nested chunks for hierarchical structures.
     """
-    content: str
+    content: Optional[str] = None
     content_raw: Optional[str] = None
     annotations: Dict[str, Any] = Field(default_factory=dict)
     children: Optional[List["ChunkPayload"]] = None
@@ -53,17 +53,17 @@ class ChunkNode(PumpkingBaseModel):
     Attributes:
         id (uuid.UUID): Unique identifier for the node.
         parent_id (Optional[uuid.UUID]): Reference to the source node.
-        content (str): The processed text.
+        content (Optional[str]): The processed text.
         content_raw (Optional[str]): The original text, stored only if different from content.
         annotations (Dict[str, Any]): Metadata attached during the strategy execution.
         children (Optional[List[ChunkNode]]): Nested nodes representing the tree structure.
     """
     id: uuid.UUID = Field(default_factory=uuid.uuid4)
     parent_id: Optional[uuid.UUID] = None
-    content: str
+    content: Optional[str] = None
     content_raw: Optional[str] = None
     annotations: Dict[str, Any] = Field(default_factory=dict)
-    children: Optional[List["ChunkNode"]] = None
+    children: Optional[List["ChunkNode"]] = Field(default_factory=list)
 
     @model_validator(mode='after')
     def clean_content_raw(self) -> 'ChunkNode':
@@ -78,6 +78,7 @@ class DocumentRoot(PumpkingBaseModel):
     The root container for a processed document tree.
     """
     id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    document: str
     original_filename: Optional[str] = None
     children: List[ChunkNode] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)

@@ -1,7 +1,7 @@
 from typing import Any, List
 from pumpking.pipeline import Step, PumpkingPipeline, annotate
 from pumpking.strategies.base import BaseStrategy
-from pumpking.models import ChunkNode, ChunkPayload
+from pumpking.models import ChunkNode, ChunkPayload, DocumentRoot
 from pumpking.protocols import ExecutionContext
 
 class PassthroughStrategy(BaseStrategy):
@@ -44,9 +44,10 @@ def test_pipeline_creates_root_node():
     pipeline = PumpkingPipeline([])
     root = pipeline.run("start_content")
     
-    assert isinstance(root, ChunkNode)
-    assert root.content == "start_content"
-    assert root.parent_id is None
+    assert isinstance(root, DocumentRoot)
+    assert len(root.children) == 1
+    assert root.children[0].content == "start_content"
+    assert root.document == "start_content"
 
 def test_pipeline_flow_execution():
     spy_step_1 = SpyStrategy()
@@ -75,4 +76,5 @@ def test_annotations_via_payload_transfer():
     
     root = step.run("test_data")
     
-    assert root.content == "test_data"
+    assert root.document == "test_data"
+    assert root.children[0].children[0].annotations['score'] == 0.9

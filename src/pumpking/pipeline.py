@@ -2,7 +2,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from pumpking.models import ChunkNode, ChunkPayload
+from pumpking.models import ChunkNode, ChunkPayload, DocumentRoot, PumpkingBaseModel
 from pumpking.protocols import StrategyProtocol, ExecutionContext
 from pumpking.exceptions import PipelineConfigurationError
 
@@ -48,7 +48,7 @@ class Step:
         """Starts a pipeline connecting this step to the next."""
         return PumpkingPipeline([self, next_step])
 
-    def run(self, initial_input: str) -> ChunkNode:
+    def run(self, initial_input: str) -> DocumentRoot:
         """Executes this single step as a pipeline."""
         return PumpkingPipeline([self]).run(initial_input)
 
@@ -65,7 +65,7 @@ class PumpkingPipeline:
         self.steps.append(next_step)
         return self
 
-    def run(self, initial_input: str) -> ChunkNode:
+    def run(self, initial_input: str) -> DocumentRoot:
         """
         Executes the entire pipeline on the input string.
         
@@ -73,7 +73,7 @@ class PumpkingPipeline:
             initial_input (str): The raw document text to process.
             
         Returns:
-            ChunkNode: The root node of the resulting document tree.
+            DocumentRoot: The root container of the resulting document tree.
         """
         root_node = ChunkNode(
             id=str(uuid.uuid4()),
@@ -89,35 +89,44 @@ class PumpkingPipeline:
             steps_to_execute = block if isinstance(block, list) else [block]
             
             for parent_node in current_frontier:
+                if parent_node.children is None:
+                    parent_node.children = []
+
                 for step in steps_to_execute:
                     context = ExecutionContext(annotators=step.annotators) 
-                    raw_output = step.strategy.execute(parent_node.content, context)
+                    input_content = parent_node.content if parent_node.content else ""
+                    raw_output = step.strategy.execute(input_content, context)
                     
                     output_items = raw_output if isinstance(raw_output, list) else [raw_output]
                     
                     for item in output_items:
-                        content_str = ""
-                        content_raw = None
-                        annotations = {}
-                        
-                        if isinstance(item, ChunkPayload):
+                        if isinstance(item, PumpkingBaseModel):
                             content_str = item.content
                             content_raw = item.content_raw
                             annotations = item.annotations
+                            extra_fields = item.model_dump(exclude={'content', 'content_raw', 'annotations', 'children'})
                         else:
                             content_str = str(item)
+                            content_raw = None
+                            annotations = {}
+                            extra_fields = {}
                         
                         child_node = ChunkNode(
                             id=str(uuid.uuid4()),
                             content=content_str,
                             content_raw=content_raw,
                             parent_id=parent_node.id,
-                            annotations=annotations
+                            annotations=annotations,
+                            **extra_fields
                         )
                         
+                        parent_node.children.append(child_node)
                         next_frontier.append(child_node)
             
             if next_frontier:
                 current_frontier = next_frontier
         
-        return root_node
+        return DocumentRoot(
+            document=initial_input,
+            children=[root_node]
+        )

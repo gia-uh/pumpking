@@ -81,7 +81,7 @@ def test_regex_chunking_pipeline_integration_flow():
 
     root_node = pipeline.run(COMPLEX_MARKDOWN)
 
-    assert root_node.content == COMPLEX_MARKDOWN
+    assert root_node.document == COMPLEX_MARKDOWN
 
     assert len(spy.received_chunks) >= 6
     assert "# System Architecture" in spy.received_chunks
