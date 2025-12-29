@@ -13,6 +13,8 @@ from pumpking.strategies.basic import (
     SlidingWindowChunking,
     AdaptiveChunking
 )
+from pumpking.strategies.advanced import HierarchicalChunking
+from pumpking.strategies.basic import ParagraphChunking, SentenceChunking
 
 COMPLEX_MARKDOWN = """# System Architecture
 
@@ -356,3 +358,60 @@ def test_adaptive_chunking_validation_error():
         assert False
     except ValueError:
         pass
+
+def test_hierarchical_chunking_content_aggregation():
+    strategies = [ParagraphChunking()]
+    strategy = HierarchicalChunking(strategies=strategies)
+    context = ExecutionContext()
+    
+    text = "# Header 1\nBody line 1.\n## Header 2\nBody line 2."
+    results = strategy.execute(text, context)
+    
+    assert len(results) == 1
+    h1_node = results[0]
+    
+    assert "Header 1" in h1_node.content
+    assert "Body line 1" in h1_node.content
+    assert "Header 2" in h1_node.content
+    
+    assert "# Header 1" in h1_node.content_raw
+    assert "## Header 2" in h1_node.content_raw
+
+def test_hierarchical_chunking_structure_and_children():
+    strategies = [ParagraphChunking()]
+    strategy = HierarchicalChunking(strategies=strategies)
+    context = ExecutionContext()
+    
+    text = "# Main\nIntro.\n## Sub\nDetails."
+    results = strategy.execute(text, context)
+    
+    main_node = results[0]
+    assert len(main_node.children) == 2 
+    
+    para_node = main_node.children[0]
+    assert "Intro." in para_node.content
+    
+    sub_node = main_node.children[1]
+    assert "Sub" in sub_node.content
+    assert "Details." in sub_node.content
+    
+    assert len(sub_node.children) == 1
+    assert "Details." in sub_node.children[0].content
+
+def test_hierarchical_chunking_deep_chain_raw():
+    strategies = [ParagraphChunking(), SentenceChunking()]
+    strategy = HierarchicalChunking(strategies=strategies)
+    context = ExecutionContext()
+    
+    text = "# A\nPara. Sent."
+    results = strategy.execute(text, context)
+    
+    node_a = results[0]
+    assert "# A" in node_a.content_raw
+    assert "Para. Sent." in node_a.content_raw
+    
+    para_node = node_a.children[0]
+    assert "Para. Sent." == para_node.content
+    
+    sent_node = para_node.children[0]
+    assert "Para." in sent_node.content
