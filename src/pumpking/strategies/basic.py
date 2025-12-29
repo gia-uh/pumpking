@@ -18,10 +18,6 @@ class RegexChunking(BaseStrategy):
     PRODUCED_OUTPUT = List[ChunkPayload]
 
     def __init__(self, pattern: str) -> None:
-        """
-        Args:
-            pattern (str): The regex pattern to split by.
-        """
         self.pattern = pattern
 
     def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
@@ -59,14 +55,6 @@ class FixedSizeChunking(BaseStrategy):
     PRODUCED_OUTPUT = List[ChunkPayload]
 
     def __init__(self, chunk_size: int, overlap: int = 0) -> None:
-        """
-        Args:
-            chunk_size (int): The maximum size of each chunk.
-            overlap (int): The number of characters to overlap between chunks.
-        
-        Raises:
-            ValueError: If chunk_size <= 0 or overlap is invalid.
-        """
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
         if overlap < 0:

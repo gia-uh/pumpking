@@ -29,7 +29,10 @@ The system is built using a **microservices** architecture.
   "source": "Client",
   "destination": "Server"
 }
-"""
+
+Future Roadmap
+
+> Warning: This module is deprecated. """
 
 
 class SpyStrategy(BaseStrategy):
@@ -166,24 +169,24 @@ def test_paragraph_chunking_keeps_single_newlines_intact():
     assert payloads[0].content == "Item 1\nItem 2\nItem 3"
 
 
-# def test_paragraph_chunking_structure_preservation():
-#     strategy = ParagraphChunking()
-#     context = ExecutionContext()
+def test_paragraph_chunking_structure_preservation():
+    strategy = ParagraphChunking()
+    context = ExecutionContext()
 
-#     payloads = strategy.execute(COMPLEX_MARKDOWN, context)
+    payloads = strategy.execute(COMPLEX_MARKDOWN, context)
 
-#     assert len(payloads) == 8
+    assert len(payloads) == 8
 
-#     assert payloads[0].content == "# System Architecture"
-#     assert (
-#         payloads[1].content
-#         == "The system is built using a **microservices** architecture."
-#     )
+    assert payloads[0].content == "# System Architecture"
+    assert (
+        payloads[1].content
+        == "The system is built using a **microservices** architecture."
+    )
 
-#     assert payloads[3].content.startswith("1. **API Gateway**")
-#     assert "Supports JWT." in payloads[3].content
+    assert payloads[3].content.startswith("1. **API Gateway**")
+    assert "Supports JWT." in payloads[3].content
 
-#     assert payloads[5].content.startswith("```json")
-#     assert '"source": "Client"' in payloads[5].content
+    assert payloads[5].content.startswith("```json")
+    assert '"source": "Client"' in payloads[5].content
 
-#     assert payloads[7].content == "> Warning: This module is deprecated."
+    assert payloads[7].content == "> Warning: This module is deprecated."
