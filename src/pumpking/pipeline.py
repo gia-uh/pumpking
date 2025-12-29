@@ -8,17 +8,33 @@ from pumpking.exceptions import PipelineConfigurationError
 
 
 def annotate(strategy: StrategyProtocol, alias: Optional[str] = None) -> Tuple[str, StrategyProtocol]:
+    """
+    Helper function to create an annotation definition for the pipeline syntax.
+    
+    Args:
+        strategy (StrategyProtocol): The strategy to use for annotation.
+        alias (Optional[str]): An explicit name for the annotation key.
+    
+    Returns:
+        Tuple[str, StrategyProtocol]: The (alias, strategy) pair.
+    """
     final_alias = alias or strategy.__class__.__name__
     return (final_alias, strategy)
 
 
 class Step:
+    """
+    Represents a single processing step in the pipeline.
+    
+    Allows attaching annotators using the bitwise OR operator (|).
+    """
     def __init__(self, strategy: StrategyProtocol, alias: Optional[str] = None) -> None:
         self.strategy = strategy
         self.alias = alias or strategy.__class__.__name__
         self.annotators: Dict[str, StrategyProtocol] = {}
 
     def __or__(self, annotation: Tuple[str, StrategyProtocol]) -> Step:
+        """Adds an annotator to this step."""
         alias, strategy = annotation
         if alias in self.annotators:
             raise PipelineConfigurationError(
@@ -29,29 +45,35 @@ class Step:
         return self
 
     def __rshift__(self, next_step: Union[Step, List[Step]]) -> PumpkingPipeline:
+        """Starts a pipeline connecting this step to the next."""
         return PumpkingPipeline([self, next_step])
 
     def run(self, initial_input: str) -> ChunkNode:
+        """Executes this single step as a pipeline."""
         return PumpkingPipeline([self]).run(initial_input)
 
 
 class PumpkingPipeline:
+    """
+    Orchestrates the execution of a sequence of Steps.
+    """
     def __init__(self, steps: List[Union[Step, List[Step]]] = None) -> None:
         self.steps = steps or []
 
     def __rshift__(self, next_step: Union[Step, List[Step]]) -> PumpkingPipeline:
+        """Appends a step or parallel block to the pipeline."""
         self.steps.append(next_step)
         return self
 
     def run(self, initial_input: str) -> ChunkNode:
         """
-        Executes the pipeline, building a hierarchical tree of ChunkNodes.
+        Executes the entire pipeline on the input string.
         
-        Logic:
-        1. Pipeline creates Root Node.
-        2. Pipeline passes parent content to Strategy.
-        3. Strategy returns ChunkPayloads (content + annotations).
-        4. Pipeline converts Payloads to ChunkNodes (assigns IDs, parent_ids).
+        Args:
+            initial_input (str): The raw document text to process.
+            
+        Returns:
+            ChunkNode: The root node of the resulting document tree.
         """
         root_node = ChunkNode(
             id=str(uuid.uuid4()),
@@ -68,30 +90,27 @@ class PumpkingPipeline:
             
             for parent_node in current_frontier:
                 for step in steps_to_execute:
-                    # Context carries annotators to the strategy
                     context = ExecutionContext(annotators=step.annotators) 
+                    raw_output = step.strategy.execute(parent_node.content, context)
                     
-                    # Execute Strategy (Pure Processing)
-                    result = step.strategy.execute(parent_node.content, context)
+                    output_items = raw_output if isinstance(raw_output, list) else [raw_output]
                     
-                    # Normalize to list
-                    output_items = result if isinstance(result, list) else [result]
-                    
-                    # Pipeline acts as Graph Builder
                     for item in output_items:
                         content_str = ""
+                        content_raw = None
                         annotations = {}
                         
                         if isinstance(item, ChunkPayload):
                             content_str = item.content
+                            content_raw = item.content_raw
                             annotations = item.annotations
                         else:
-                            # Fallback for strategies returning raw strings
                             content_str = str(item)
                         
                         child_node = ChunkNode(
                             id=str(uuid.uuid4()),
                             content=content_str,
+                            content_raw=content_raw,
                             parent_id=parent_node.id,
                             annotations=annotations
                         )
