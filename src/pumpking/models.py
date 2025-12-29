@@ -38,10 +38,12 @@ class ChunkPayload(PumpkingBaseModel):
         content (str): The processed/cleaned text content.
         content_raw (Optional[str]): The original text content before cleaning, if different.
         annotations (Dict[str, Any]): Metadata or analysis results attached to this chunk.
+        children (Optional[List[ChunkPayload]]): Nested chunks for hierarchical structures.
     """
     content: str
     content_raw: Optional[str] = None
     annotations: Dict[str, Any] = Field(default_factory=dict)
+    children: Optional[List["ChunkPayload"]] = None
 
 
 class ChunkNode(PumpkingBaseModel):
@@ -54,12 +56,14 @@ class ChunkNode(PumpkingBaseModel):
         content (str): The processed text.
         content_raw (Optional[str]): The original text, stored only if different from content.
         annotations (Dict[str, Any]): Metadata attached during the strategy execution.
+        children (Optional[List[ChunkNode]]): Nested nodes representing the tree structure.
     """
     id: uuid.UUID = Field(default_factory=uuid.uuid4)
     parent_id: Optional[uuid.UUID] = None
     content: str
     content_raw: Optional[str] = None
     annotations: Dict[str, Any] = Field(default_factory=dict)
+    children: Optional[List["ChunkNode"]] = None
 
     @model_validator(mode='after')
     def clean_content_raw(self) -> 'ChunkNode':
