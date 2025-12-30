@@ -1,7 +1,31 @@
 from typing import Any, Dict, List, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict
+from pumpking.models import NERResult, ChunkNode
 
-from pumpking.models import NERResult
+class ExecutionContext(BaseModel):
+    """
+    Holds configuration and state for the current execution step.
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    annotators: Dict[str, Any] = {}
+
+
+@runtime_checkable
+class StrategyProtocol(Protocol):
+    """
+    Protocol defining the interface for all processing strategies.
+    """
+    def execute(self, data: Any, context: ExecutionContext) -> Any:
+        """
+        Executes the strategy logic on the provided data.
+        """
+        ...
+
+    def to_node(self, payload: Any) -> ChunkNode:
+        """
+        Converts a strategy-specific payload into a graph node.
+        """
+        ...
 
 
 @runtime_checkable
@@ -12,13 +36,6 @@ class NERProviderProtocol(Protocol):
     def extract_entities(self, sentences: List[str], **kwargs: Any) -> List[NERResult]:
         """
         Analyzes a list of sentences and returns entities referencing sentence indices.
-        
-        Args:
-            sentences: The list of text segments to analyze.
-            **kwargs: Additional configuration parameters for the provider.
-            
-        Returns:
-            List[NERResult]: Entities with the indices of the sentences they contain.
         """
         ...
 
@@ -31,33 +48,5 @@ class SummaryProviderProtocol(Protocol):
     def summarize(self, text: str, **kwargs: Any) -> str:
         """
         Generates a concise summary of the provided text.
-
-        Args:
-            text: The input text to summarize.
-            **kwargs: Additional configuration parameters for the provider.
-
-        Returns:
-            str: The generated summary.
         """
         ...
-
-
-@runtime_checkable
-class StrategyProtocol(Protocol):
-    """
-    Protocol defining the interface for all processing strategies.
-    """
-    def execute(self, data: Any, context: 'ExecutionContext') -> Any:
-        """
-        Executes the strategy on the provided data.
-        """
-        ...
-
-
-class ExecutionContext(BaseModel):
-    """
-    Holds configuration and state for the current execution step.
-    """
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    
-    annotators: Dict[str, StrategyProtocol] = {}

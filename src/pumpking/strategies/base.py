@@ -1,65 +1,66 @@
-from abc import ABC, abstractmethod
 from typing import Any, List, Optional
-
-from pumpking.models import ChunkPayload
+from pumpking.models import ChunkPayload, ChunkNode
 from pumpking.protocols import StrategyProtocol, ExecutionContext
 
-
-class BaseStrategy(ABC, StrategyProtocol):
+class BaseStrategy(StrategyProtocol):
     """
-    Abstract base class for all processing strategies.
-    
-    Provides helper methods for handling annotators and payload creation.
+    Base class for all strategies, providing default implementations.
     """
+    # Essential attributes required by validation tests
     SUPPORTED_INPUTS: List[Any] = [str, list[str]]
     PRODUCED_OUTPUT: Any = List[ChunkPayload]
 
-    @abstractmethod
     def execute(self, data: Any, context: ExecutionContext) -> Any:
         """
-        Executes the strategy logic.
-        
-        Args:
-            data (Any): The input data (usually string or list of strings).
-            context (ExecutionContext): Context containing configured annotators.
-            
-        Returns:
-            Any: Typically a List[ChunkPayload] or a primitive type.
+        Abstract method to be implemented by concrete strategies.
         """
-        pass
+        raise NotImplementedError("Strategies must implement execute method.")
+
+    def to_node(self, payload: Any) -> ChunkNode:
+        """
+        Default implementation to convert a ChunkPayload into a ChunkNode.
+        Recursively converts children payloads if present.
+        """
+        if isinstance(payload, ChunkPayload):
+            children_nodes = []
+            if payload.children:
+                children_nodes = [self.to_node(child) for child in payload.children]
+
+            return ChunkNode(
+                content=payload.content,
+                content_raw=payload.content_raw,
+                annotations=payload.annotations,
+                children=children_nodes
+            )
+        
+        return ChunkNode(content=str(payload))
 
     def _apply_annotators_to_payload(
         self, 
         content: str, 
         context: ExecutionContext, 
-        content_raw: Optional[str] = None
+        content_raw: str = None
     ) -> ChunkPayload:
         """
-        Wraps content in a ChunkPayload and executes any configured annotators.
-        
-        Args:
-            content (str): The cleaned content.
-            context (ExecutionContext): Context containing annotators to run.
-            content_raw (Optional[str]): Original raw content.
-            
-        Returns:
-            ChunkPayload: The constructed payload with annotations.
+        Helper method to apply configured annotators to the generated content.
         """
-        payload = ChunkPayload(content=content, content_raw=content_raw)
+        payload = ChunkPayload(
+            content=content,
+            content_raw=content_raw or content
+        )
         
         if not context.annotators:
             return payload
 
-        for alias, strategy in context.annotators.items():
-            empty_context = ExecutionContext()
-            result = strategy.execute(content, empty_context)
-            payload.annotations[alias] = result
-        
+        for alias, annotator in context.annotators.items():
+            annotation_result = annotator.execute(content, ExecutionContext())
+            payload.annotations[alias] = annotation_result
+            
         return payload
 
     def _apply_annotators_to_list(self, items: List[str], context: ExecutionContext) -> List[ChunkPayload]:
         """
         Helper to convert a simple list of strings into annotated ChunkPayloads.
-        Assumes raw content is identical to processed content.
+        Required by Mock strategies in tests.
         """
         return [self._apply_annotators_to_payload(item, context) for item in items]

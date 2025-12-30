@@ -2,7 +2,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from pumpking.models import ChunkNode, ChunkPayload, DocumentRoot, PumpkingBaseModel
+from pumpking.models import ChunkNode, DocumentRoot
 from pumpking.protocols import StrategyProtocol, ExecutionContext
 from pumpking.exceptions import PipelineConfigurationError
 
@@ -25,22 +25,27 @@ class Step:
         self.annotators: Dict[str, StrategyProtocol] = {}
 
     def __or__(self, annotation: Tuple[str, StrategyProtocol]) -> Step:
-        """Adds an annotator to this step."""
+        """
+        Adds an annotator to this step using the | operator.
+        """
         alias, strategy = annotation
         if alias in self.annotators:
             raise PipelineConfigurationError(
-                f"Duplicate annotator alias '{alias}' found in step '{self.alias}'. "
-                "Annotator aliases must be unique within a step."
+                f"Duplicate annotator alias '{alias}' found in step '{self.alias}'."
             )
         self.annotators[alias] = strategy
         return self
 
     def __rshift__(self, next_step: Union[Step, List[Step]]) -> PumpkingPipeline:
-        """Starts a pipeline connecting this step to the next."""
+        """
+        Starts a pipeline connecting this step to the next using the >> operator.
+        """
         return PumpkingPipeline([self, next_step])
 
     def run(self, initial_input: str) -> DocumentRoot:
-        """Executes this single step as a pipeline."""
+        """
+        Executes this single step as a pipeline.
+        """
         return PumpkingPipeline([self]).run(initial_input)
 
 
@@ -52,7 +57,9 @@ class PumpkingPipeline:
         self.steps = steps or []
 
     def __rshift__(self, next_step: Union[Step, List[Step]]) -> PumpkingPipeline:
-        """Appends a step or parallel block to the pipeline."""
+        """
+        Appends a step or parallel block to the pipeline using the >> operator.
+        """
         self.steps.append(next_step)
         return self
 
@@ -63,6 +70,7 @@ class PumpkingPipeline:
         root_node = ChunkNode(
             id=str(uuid.uuid4()),
             content=initial_input,
+            strategy_label="Input",
             parent_id=None
         )
         
@@ -79,31 +87,19 @@ class PumpkingPipeline:
 
                 for step in steps_to_execute:
                     context = ExecutionContext(annotators=step.annotators) 
+                    
                     input_content = parent_node.content if parent_node.content else ""
+                    
                     raw_output = step.strategy.execute(input_content, context)
                     
                     output_items = raw_output if isinstance(raw_output, list) else [raw_output]
                     
                     for item in output_items:
-                        if isinstance(item, PumpkingBaseModel):
-                            content_str = item.content
-                            content_raw = item.content_raw
-                            annotations = item.annotations
-                            extra_fields = item.model_dump(exclude={'content', 'content_raw', 'annotations', 'children'})
-                        else:
-                            content_str = str(item)
-                            content_raw = None
-                            annotations = {}
-                            extra_fields = {}
+                        child_node = step.strategy.to_node(item)
                         
-                        child_node = ChunkNode(
-                            id=str(uuid.uuid4()),
-                            content=content_str,
-                            content_raw=content_raw,
-                            parent_id=parent_node.id,
-                            annotations=annotations,
-                            **extra_fields
-                        )
+                        child_node.id = str(uuid.uuid4())
+                        child_node.parent_id = parent_node.id
+                        child_node.strategy_label = step.alias
                         
                         parent_node.children.append(child_node)
                         next_frontier.append(child_node)
