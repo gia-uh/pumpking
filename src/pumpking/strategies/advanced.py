@@ -2,12 +2,12 @@ import markdown
 from html.parser import HTMLParser
 from typing import List, Optional
 
-from pumpking.models import NERResult, ChunkPayload, ChunkNode
+from pumpking.models import NERResult, ChunkPayload, ChunkNode, EntityChunkPayload, EntityChunkNode
 from pumpking.protocols import ExecutionContext, NERProviderProtocol
 from pumpking.strategies.base import BaseStrategy
+from pumpking.strategies.basic import SentenceChunking 
 from pumpking.strategies.providers import LLMProvider
 from pumpking.utils import clean_text
-
 
 class _SectionNode:
     def __init__(self, level: int, title: str = "") -> None:
@@ -152,57 +152,51 @@ class HierarchicalChunking(BaseStrategy):
     
 class EntityBasedChunking(BaseStrategy):
     """
-    Strategy that groups text by entities using a NER provider (LLMProvider) and positional indices.
-    It uses the shared utility for text cleaning.
+    Strategy that groups text by entities using a NER provider.
+    Delegates splitting to SentenceChunking for robust sentence boundary detection.
     """
     def __init__(self, ner_provider: Optional[NERProviderProtocol] = None) -> None:
         self.ner_provider = ner_provider or LLMProvider()
+        self.splitter = SentenceChunking()
 
     def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
-        """
-        Executes the entity-based chunking logic using reconciliation and standard cleaning.
-        """
-        raw_segments = [s.strip() for s in data.split('.') if s.strip()]
-        
-        if not raw_segments:
+        if not data:
             return []
 
-        clean_segments = [clean_text(s) for s in raw_segments]
+        sentence_payloads = self.splitter.execute(data, context)
+        
+        if not sentence_payloads:
+            return []
 
-        ner_results = self.ner_provider.analyze(clean_segments)
+        for p in sentence_payloads:
+            if p.content_raw:
+                p.content = clean_text(p.content_raw, strip_markdown=True)
+
+        clean_segments_for_ner = [p.content for p in sentence_payloads]
+
+        ner_results = self.ner_provider.extract_entities(clean_segments_for_ner)
         
         entity_payloads = []
         
         for result in ner_results:
-            child_payloads = []
+            children = []
             
             for index in result.indices:
-                if 0 <= index < len(raw_segments):
-                    raw_text = raw_segments[index]
-                    clean_segment_text = clean_segments[index]
-                    
-                    child = self._apply_annotators_to_payload(
-                        content=clean_segment_text,
-                        context=context,
-                        content_raw=raw_text
-                    )
-                    child_payloads.append(child)
+                if 0 <= index < len(sentence_payloads):
+                    children.append(sentence_payloads[index])
             
-            if child_payloads:
+            if children:
                 entity_node = EntityChunkPayload(
                     entity=result.entity,
                     type=result.label,
                     content=None,
-                    children=child_payloads
+                    children=children
                 )
                 entity_payloads.append(entity_node)
             
         return entity_payloads
     
     def to_node(self, payload: ChunkPayload) -> ChunkNode:
-        """
-        Converts specialized payloads to specialized nodes.
-        """
         if isinstance(payload, EntityChunkPayload):
             children_nodes = []
             if payload.children:

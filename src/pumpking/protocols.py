@@ -9,7 +9,7 @@ class NERProviderProtocol(Protocol):
     """
     Protocol for NER providers.
     """
-    def analyze(self, sentences: List[str]) -> List[NERResult]:
+    def extract_entities(self, sentences: List[str]) -> List[NERResult]:
         """
         Analyzes a list of sentences and returns entities referencing sentence indices.
         

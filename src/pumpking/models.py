@@ -3,13 +3,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 
 class PumpkingBaseModel(BaseModel):
-    """
-    Base model for all Pumpking objects providing dictionary conversion utilities.
-    """
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Converts the model to a dictionary, recursively removing None values and empty collections.
-        """
         data = self.model_dump(mode='json', exclude_none=True)
         return self._clean_empty(data)
 
@@ -57,6 +51,7 @@ class EntityChunkPayload(ChunkPayload):
     type: str
     content: Optional[str] = None
     content_raw: Optional[str] = None
+    children: Optional[List[ChunkPayload]] = None
 
 
 class ChunkNode(PumpkingBaseModel):
@@ -72,7 +67,6 @@ class ChunkNode(PumpkingBaseModel):
 
     @model_validator(mode='after')
     def clean_content_raw(self) -> 'ChunkNode':
-        """Optimizes storage by removing content_raw if it matches content."""
         if self.content_raw == self.content:
             self.content_raw = None
         return self
@@ -86,6 +80,7 @@ class EntityChunkNode(ChunkNode):
     type: str
     content: Optional[str] = None
     content_raw: Optional[str] = None
+    children: Optional[List[ChunkNode]] = Field(default_factory=list)
 
 
 class DocumentRoot(PumpkingBaseModel):

@@ -11,9 +11,11 @@ from pumpking.strategies.basic import (
     ParagraphChunking,
     SentenceChunking,
     SlidingWindowChunking,
-    AdaptiveChunking
+    AdaptiveChunking,
 )
-from pumpking.strategies.advanced import HierarchicalChunking
+from pumpking.models import NERResult, EntityChunkPayload
+from pumpking.protocols import NERProviderProtocol
+from pumpking.strategies.advanced import EntityBasedChunking, HierarchicalChunking
 
 COMPLEX_MARKDOWN = """# System Architecture
 
@@ -194,7 +196,8 @@ def test_paragraph_chunking_structure_preservation():
     assert '"source": "Client"' in payloads[5].content
 
     assert payloads[7].content == "> Warning: This module is deprecated."
-    
+
+
 def test_sentence_chunking_basic():
     strategy = SentenceChunking()
     context = ExecutionContext()
@@ -207,68 +210,74 @@ def test_sentence_chunking_basic():
     assert results[2].content == "Is it working?"
     assert results[3].content == "Yes."
 
+
 def test_pipeline_paragraph_to_sentence_structure():
     spy = SpyStrategy()
     pipeline = Step(ParagraphChunking()) >> Step(SentenceChunking()) >> Step(spy)
-    
+
     text = "Para 1 Sentence 1. Para 1 Sentence 2.\n\nPara 2 Sentence 1."
     pipeline.run(text)
-    
+
     assert len(spy.received_chunks) == 3
     assert "Para 1 Sentence 1." in spy.received_chunks
     assert "Para 1 Sentence 2." in spy.received_chunks
     assert "Para 2 Sentence 1." in spy.received_chunks
 
+
 def test_paragraph_annotated_with_sentences():
     strategy = ParagraphChunking()
     context = ExecutionContext(annotators={"sentences": SentenceChunking()})
     text = "Block A. Block B.\n\nBlock C."
-    
+
     results = strategy.execute(text, context)
-    
+
     assert len(results) == 2
     assert results[0].content == "Block A. Block B."
-    
+
     assert "sentences" in results[0].annotations
     sentences_list = results[0].annotations["sentences"]
     assert len(sentences_list) == 2
     assert sentences_list[0].content == "Block A."
     assert sentences_list[1].content == "Block B."
 
+
 def test_sentence_chunking_on_complex_markdown():
     strategy = SentenceChunking()
     context = ExecutionContext()
-    
+
     payloads = strategy.execute(COMPLEX_MARKDOWN, context)
-    
+
     assert len(payloads) > 1
-    
+
     contents = [p.content for p in payloads]
-    
+
     assert any("Supports OAuth2." in c for c in contents)
     assert any("This module is deprecated." in c for c in contents)
-    
+
+
 def test_sliding_window_logic():
     strategy = SlidingWindowChunking(window_size=3, overlap=1)
     context = ExecutionContext()
     text = "one two three four five"
-    
+
     results = strategy.execute(text, context)
-    
+
     assert len(results) == 2
     assert results[0].content == "one two three"
     assert results[1].content == "three four five"
 
+
 def test_sliding_window_cleaning():
     strategy = SlidingWindowChunking(window_size=3, overlap=0)
     context = ExecutionContext()
-    
-    text = "word1   word2 word3" 
-    
+
+    text = "word1   word2 word3"
+
     results = strategy.execute(text, context)
-    
+
     assert len(results) == 1
     assert results[0].content == "word1 word2 word3"
+
 
 def test_sliding_window_validation():
     try:
@@ -276,62 +285,67 @@ def test_sliding_window_validation():
         assert False, "Should raise ValueError for overlap >= window_size"
     except ValueError:
         pass
-    
+
+
 def test_sliding_window_on_complex_markdown():
     strategy = SlidingWindowChunking(window_size=15, overlap=5)
     context = ExecutionContext()
-    
+
     payloads = strategy.execute(COMPLEX_MARKDOWN, context)
-    
+
     assert len(payloads) >= 3
-    
+
     first_chunk = payloads[0].content
     assert "System Architecture" in first_chunk
     assert "microservices" in first_chunk
-    
+
     last_chunk = payloads[-1].content
     assert "deprecated" in last_chunk
-    
+
     combined_content = " ".join([p.content for p in payloads])
     assert "OAuth2" in combined_content
     assert "API Gateway" in combined_content
-    
+
+
 def test_adaptive_chunking_merges_short_sentences():
     strategy = AdaptiveChunking(min_chunk_size=25, max_chunk_size=100)
     context = ExecutionContext()
     text = "Short one. Short two. Short three."
-    
+
     results = strategy.execute(text, context)
-    
+
     assert len(results) == 1
     assert results[0].content == "Short one. Short two. Short three."
+
 
 def test_adaptive_chunking_respects_max_limit():
     strategy = AdaptiveChunking(min_chunk_size=10, max_chunk_size=20)
     context = ExecutionContext()
     text = "First sentence is long. Second sentence is also long."
-    
+
     results = strategy.execute(text, context)
-    
+
     assert len(results) == 2
     assert results[0].content == "First sentence is long."
     assert results[1].content == "Second sentence is also long."
 
+
 def test_adaptive_chunking_on_complex_markdown():
     strategy = AdaptiveChunking(min_chunk_size=50, max_chunk_size=200)
     context = ExecutionContext()
-    
+
     results = strategy.execute(COMPLEX_MARKDOWN, context)
-    
+
     assert len(results) >= 1
-    
+
     first_chunk = results[0].content
     assert "# System Architecture" in first_chunk
     assert "microservices" in first_chunk
-    
+
     combined_content = "".join([p.content for p in results])
     assert "OAuth2" in combined_content
     assert "Warning: This module is deprecated." in combined_content
+
 
 def test_adaptive_chunking_validation_error():
     try:
@@ -340,59 +354,145 @@ def test_adaptive_chunking_validation_error():
     except ValueError:
         pass
 
+
 def test_hierarchical_chunking_content_aggregation():
     strategies = [ParagraphChunking()]
     strategy = HierarchicalChunking(strategies=strategies)
     context = ExecutionContext()
-    
+
     text = "# Header 1\nBody line 1.\n## Header 2\nBody line 2."
     results = strategy.execute(text, context)
-    
+
     assert len(results) == 1
     h1_node = results[0]
-    
+
     assert "Header 1" in h1_node.content
     assert "Body line 1" in h1_node.content
     assert "Header 2" in h1_node.content
-    
+
     assert "# Header 1" in h1_node.content_raw
     assert "## Header 2" in h1_node.content_raw
+
 
 def test_hierarchical_chunking_structure_and_children():
     strategies = [ParagraphChunking()]
     strategy = HierarchicalChunking(strategies=strategies)
     context = ExecutionContext()
-    
+
     text = "# Main\nIntro.\n## Sub\nDetails."
     results = strategy.execute(text, context)
-    
+
     main_node = results[0]
-    assert len(main_node.children) == 2 
-    
+    assert len(main_node.children) == 2
+
     para_node = main_node.children[0]
     assert "Intro." in para_node.content
-    
+
     sub_node = main_node.children[1]
     assert "Sub" in sub_node.content
     assert "Details." in sub_node.content
-    
+
     assert len(sub_node.children) == 1
     assert "Details." in sub_node.children[0].content
+
 
 def test_hierarchical_chunking_deep_chain_raw():
     strategies = [ParagraphChunking(), SentenceChunking()]
     strategy = HierarchicalChunking(strategies=strategies)
     context = ExecutionContext()
-    
+
     text = "# A\nPara. Sent."
     results = strategy.execute(text, context)
-    
+
     node_a = results[0]
     assert "# A" in node_a.content_raw
     assert "Para. Sent." in node_a.content_raw
-    
+
     para_node = node_a.children[0]
     assert "Para. Sent." == para_node.content
-    
+
     sent_node = para_node.children[0]
     assert "Para." in sent_node.content
+
+
+class MockNERProvider(NERProviderProtocol):
+    def __init__(self, predefined_results: List[NERResult] = None):
+        self.predefined_results = predefined_results or []
+
+    def extract_entities(self, sentences: List[str]) -> List[NERResult]:
+        if not self.predefined_results:
+            if not sentences:
+                return []
+            return [
+                NERResult(
+                    entity="Default Mock",
+                    label="MISC",
+                    indices=list(range(len(sentences)))
+                )
+            ]
+        return self.predefined_results
+
+
+def test_entity_chunking_complex_narrative_overlap_and_coref():
+    text = "Apple released the Vision Pro. It implies a new era. Tim Cook announced it in Cupertino. The device costs $3500."
+    
+    mock_results = [
+        NERResult(entity="Apple", label="ORG", indices=[0, 2]),
+        NERResult(entity="Vision Pro", label="PROD", indices=[0, 1, 2, 3]),
+        NERResult(entity="Tim Cook", label="PER", indices=[2])
+    ]
+    
+    provider = MockNERProvider(predefined_results=mock_results)
+    strategy = EntityBasedChunking(ner_provider=provider)
+    context = ExecutionContext()
+
+    payloads = strategy.execute(text, context)
+
+    assert len(payloads) == 3
+    
+    apple_node = next(p for p in payloads if p.entity == "Apple")
+    assert apple_node.children is not None
+    assert len(apple_node.children) == 2
+    assert "Apple released" in apple_node.children[0].content
+    assert "Tim Cook announced" in apple_node.children[1].content
+
+
+def test_entity_chunking_preserves_messy_format_in_raw():
+    raw_text = "**SpaceX** launched the _Starship_ containing [Link](http://x.com)."
+    
+    mock_results = [NERResult(entity="SpaceX", label="ORG", indices=[0])]
+    
+    provider = MockNERProvider(predefined_results=mock_results)
+    strategy = EntityBasedChunking(ner_provider=provider)
+    context = ExecutionContext()
+
+    payloads = strategy.execute(raw_text, context)
+    
+    assert len(payloads) == 1
+    child = payloads[0].children[0]
+    
+    assert "**" not in child.content
+    assert "http" not in child.content
+    assert "[" not in child.content
+    
+    assert child.content_raw == raw_text
+
+
+def test_entity_chunking_discontinuous_segments():
+    text = "Python is great. Java is verbose. Python is also dynamic."
+    
+    mock_results = [
+        NERResult(entity="Python", label="LANG", indices=[0, 2]),
+        NERResult(entity="Java", label="LANG", indices=[1])
+    ]
+    
+    provider = MockNERProvider(predefined_results=mock_results)
+    strategy = EntityBasedChunking(ner_provider=provider)
+    payloads = strategy.execute(text, ExecutionContext())
+    
+    python_node = next(p for p in payloads if p.entity == "Python")
+    
+    assert len(python_node.children) == 2
+    assert "is great" in python_node.children[0].content
+    assert "is also dynamic" in python_node.children[1].content
+    assert "Java" not in "".join([c.content for c in python_node.children])
