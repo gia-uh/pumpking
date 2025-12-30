@@ -8,6 +8,7 @@ from pumpking.protocols import (
     NERProviderProtocol,
     SummaryProviderProtocol,
     TopicProviderProtocol,
+    ContextualProviderProtocol,
 )
 
 
@@ -43,12 +44,38 @@ class LLMTopicAssignment(BaseModel):
     topics: List[str]
 
 
+class LLMContextAssignment(BaseModel):
+    """
+    Structured assignment of context to a specific block.
+    """
+
+    block_id: str = Field(..., description="The ID of the block (e.g., 'B1').")
+    context: str = Field(..., description="The situational context for this block.")
+    summary: str = Field(
+        ..., description="A concise summary of this block for the next iteration."
+    )
+
+
+class LLMBatchContextResponse(BaseModel):
+    """
+    Response schema for batch context processing.
+    """
+
+    assignments: List[LLMContextAssignment]
+
+
 class LLMTopicResponse(BaseModel):
     """Structured response for a batch of segments."""
 
     assignments: List[LLMTopicAssignment]
 
-class LLMProvider(NERProviderProtocol, SummaryProviderProtocol, TopicProviderProtocol):
+
+class LLMProvider(
+    NERProviderProtocol,
+    SummaryProviderProtocol,
+    TopicProviderProtocol,
+    ContextualProviderProtocol,
+):
     """
     Production-ready LLM Provider with Sliding Window support.
     Delegates semantic grouping to LLM and performs deterministic index mapping.
@@ -243,34 +270,36 @@ class LLMProvider(NERProviderProtocol, SummaryProviderProtocol, TopicProviderPro
         )
 
         return completion.choices[0].message.content or ""
-    
+
     def assign_topics(self, chunks: List[str], **kwargs: Any) -> List[List[str]]:
         mode = kwargs.get("topic_mode", "batch_verified")
-        
+
         # Phase 1: Taxonomy Discovery (Global & Language Consistent)
         taxonomy = self._discover_taxonomy(chunks, **kwargs)
-        
+
         # Phase 2: Classification
         if mode == "one_by_one":
             return [self._classify_single_chunk(c, taxonomy, **kwargs) for c in chunks]
-        
+
         return self._classify_with_batch_verification(chunks, taxonomy, **kwargs)
 
     def _discover_taxonomy(self, chunks: List[str], **kwargs: Any) -> List[str]:
         raw_metadata = []
         batch_size = kwargs.get("taxonomy_batch_size", 15)
-        
+
         for i in range(0, len(chunks), batch_size):
             batch_text = "\n".join(chunks[i : i + batch_size])
             discovery_prompt = (
                 "Extract main themes. CRITICAL: Use the ORIGINAL LANGUAGE of the text. "
                 "Do not translate to English."
             )
-            
+
             response = self.client.chat.completions.create(
                 model=kwargs.get("model", self.default_model),
-                messages=[{"role": "system", "content": discovery_prompt}, 
-                          {"role": "user", "content": batch_text}]
+                messages=[
+                    {"role": "system", "content": discovery_prompt},
+                    {"role": "user", "content": batch_text},
+                ],
             )
             raw_metadata.append(response.choices[0].message.content)
 
@@ -278,41 +307,112 @@ class LLMProvider(NERProviderProtocol, SummaryProviderProtocol, TopicProviderPro
             "Consolidate these labels into a clean list (max 15 items). "
             "KEEP THE ORIGINAL LANGUAGE (e.g., Spanish). Resolve synonyms."
         )
-        
+
         completion = self.client.beta.chat.completions.parse(
             model=kwargs.get("model", self.default_model),
-            messages=[{"role": "system", "content": unification_system},
-                      {"role": "user", "content": " | ".join(raw_metadata)}],
-            response_format=LLMTaxonomyResponse
+            messages=[
+                {"role": "system", "content": unification_system},
+                {"role": "user", "content": " | ".join(raw_metadata)},
+            ],
+            response_format=LLMTaxonomyResponse,
         )
         return completion.choices[0].message.parsed.topics
 
-    def _classify_with_batch_verification(self, chunks: List[str], taxonomy: List[str], **kwargs: Any) -> List[List[str]]:
+    def _classify_with_batch_verification(
+        self, chunks: List[str], taxonomy: List[str], **kwargs: Any
+    ) -> List[List[str]]:
         batch_size = kwargs.get("batch_size", 20)
         results = [[] for _ in chunks]
-        
+
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i : i + batch_size]
             marked_text = "\n".join([f"[B{j}] {text}" for j, text in enumerate(batch)])
-            
+
             prompt = (
                 f"Taxonomy: [{', '.join(taxonomy)}]. For each block [Bk], "
                 "return the topics and the EXACT first word of its text."
             )
-            
+
             completion = self.client.beta.chat.completions.parse(
                 model=kwargs.get("model", self.default_model),
-                messages=[{"role": "system", "content": prompt}, 
-                          {"role": "user", "content": marked_text}],
-                response_format=LLMTopicResponse
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": marked_text},
+                ],
+                response_format=LLMTopicResponse,
             )
-            
+
             for asm in completion.choices[0].message.parsed.assignments:
                 idx_in_batch = int(asm.block_id.replace("B", ""))
                 global_idx = i + idx_in_batch
-                
-                if global_idx < len(chunks) and chunks[global_idx].lower().startswith(asm.anchor.lower()):
+
+                if global_idx < len(chunks) and chunks[global_idx].lower().startswith(
+                    asm.anchor.lower()
+                ):
                     results[global_idx] = asm.topics
                 else:
-                    results[global_idx] = self._classify_single_chunk(chunks[global_idx], taxonomy, **kwargs)
+                    results[global_idx] = self._classify_single_chunk(
+                        chunks[global_idx], taxonomy, **kwargs
+                    )
+        return results
+
+    def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
+        """
+        Assigns situational context to each chunk using a rolling memory approach.
+        """
+        if not chunks:
+            return []
+
+        if not self.client:
+            raise ValueError(
+                "OpenAI Client not initialized. Please provide an API Key."
+            )
+
+        active_model = kwargs.get("model", self.default_model)
+        active_temp = kwargs.get("temperature", self.default_temperature)
+
+        batch_size = kwargs.get("batch_size", 5)
+        results = ["" for _ in chunks]
+        previous_summary = "Start of document."
+
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            marked_text = "\n".join([f"[B{j}] {text}" for j, text in enumerate(batch)])
+
+            system_prompt = (
+                "You are an expert technical writer. For each provided text block [Bk], "
+                "generate a situational context that anchors it to the document flow. "
+                "Use the provided PREVIOUS SUMMARY to maintain continuity. "
+                "Also, provide a new summary for the current set of blocks to be used next. "
+                "CRITICAL: Respond in the SAME LANGUAGE as the input text."
+            )
+
+            user_prompt = (
+                f"PREVIOUS SUMMARY: {previous_summary}\n\nBLOCKS:\n{marked_text}"
+            )
+
+            completion = self.client.beta.chat.completions.parse(
+                model=active_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format=LLMBatchContextResponse,
+                temperature=active_temp,
+            )
+
+            if completion.choices[0].message.parsed:
+                batch_assignments = completion.choices[0].message.parsed.assignments
+                for asm in batch_assignments:
+                    try:
+                        idx_in_batch = int(asm.block_id.replace("B", ""))
+                        global_idx = i + idx_in_batch
+                        if global_idx < len(chunks):
+                            results[global_idx] = asm.context
+                    except (ValueError, IndexError):
+                        continue
+
+                if batch_assignments:
+                    previous_summary = batch_assignments[-1].summary
+
         return results
