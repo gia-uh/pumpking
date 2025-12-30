@@ -1,6 +1,6 @@
 import markdown
 from html.parser import HTMLParser
-from typing import List, Optional
+from typing import List, Optional, Any
 from pumpking.models import (
     ChunkPayload,
     ChunkNode,
@@ -13,10 +13,14 @@ from pumpking.protocols import (
     ExecutionContext,
     NERProviderProtocol,
     SummaryProviderProtocol,
-    TopicProviderProtocol
+    TopicProviderProtocol,
 )
 from pumpking.strategies.base import BaseStrategy
-from pumpking.strategies.basic import SentenceChunking, AdaptiveChunking
+from pumpking.strategies.basic import (
+    SentenceChunking,
+    AdaptiveChunking,
+    ParagraphChunking,
+)
 from pumpking.strategies.providers import LLMProvider
 from pumpking.utils import clean_text
 
@@ -184,7 +188,8 @@ class EntityBasedChunking(BaseStrategy):
 
     def __init__(
         self,
-        ner_provider: Optional[NERProviderProtocol] = None,
+        ner_provider: NERProviderProtocol = LLMProvider(),
+        splitter: BaseStrategy = SentenceChunking(),
         window_size: int = 20,
         window_overlap: int = 5,
     ) -> None:
@@ -239,7 +244,6 @@ class EntityBasedChunking(BaseStrategy):
             children_nodes = []
             if payload.children:
                 children_nodes = [
-                    # If child payloads are generic, map them to simple ChunkNodes
                     ChunkNode(
                         content=chunk.content,
                         content_raw=chunk.content_raw,
@@ -258,7 +262,6 @@ class EntityBasedChunking(BaseStrategy):
                 children=children_nodes,
             )
 
-        # Fallback for non-entity payloads (Standard ChunkNode)
         return ChunkNode(
             content=payload.content,
             content_raw=payload.content_raw,
@@ -273,60 +276,62 @@ class SummaryChunkingStrategy(BaseStrategy):
 
     This strategy uses AdaptiveChunking to create semantically complete text blocks
     within a specific size range. Each block is then summarized by the provided
-    SummaryProvider. If no provider is specified, it defaults to LLMProvider.
-    The resulting payload uses the summary as the main content (for indexing)
-    and preserves the original text in content_raw (for retrieval).
+    SummaryProvider.
     """
-
     def __init__(
-        self,
-        provider: Optional[SummaryProviderProtocol] = None,
-        min_chunk_size: int = 1000,
-        max_chunk_size: int = 4000,
+        self, 
+        provider: SummaryProviderProtocol = LLMProvider(), 
+        min_chunk_size: int = 1000, 
+        max_chunk_size: int = 4000
     ) -> None:
-        self.provider = provider or LLMProvider()
-        self.splitter = AdaptiveChunking(min_chunk_size, max_chunk_size)
+        self.provider = provider
+        self.min_chunk_size = min_chunk_size
+        self.max_chunk_size = max_chunk_size
+        self.splitter = AdaptiveChunking(
+            min_chunk_size=self.min_chunk_size, 
+            max_chunk_size=self.max_chunk_size
+        )
 
     def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+        """
+        Executes adaptive splitting and summarizes each resulting block.
+        """
         if not data:
             return []
 
         empty_context = ExecutionContext()
         raw_blocks = self.splitter.execute(data, empty_context)
-
+        
         summary_payloads = []
-
+        
         for block in raw_blocks:
             if not block.content:
                 continue
 
             summary_text = self.provider.summarize(block.content)
-
+            
             payload = self._apply_annotators_to_payload(
-                content=summary_text, context=context, content_raw=block.content
+                content=summary_text,
+                context=context,
+                content_raw=block.content
             )
             summary_payloads.append(payload)
-
+            
         return summary_payloads
 
-
-from typing import Any, List, Optional, Dict
-from pumpking.models import ChunkPayload, ChunkNode, TopicChunkPayload, TopicChunkNode
-from pumpking.protocols import ExecutionContext, TopicProviderProtocol
-from pumpking.strategies.base import BaseStrategy
-from pumpking.strategies.basic import ParagraphChunking
 
 class TopicBasedChunking(BaseStrategy):
     """
     Strategy that groups text fragments into thematic containers.
-    
+
     Allows multi-membership where a single fragment can belong to several topics.
     """
+
     def __init__(
-        self, 
+        self,
         topic_provider: TopicProviderProtocol,
         splitter: BaseStrategy = ParagraphChunking(),
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         self.topic_provider = topic_provider
         self.splitter = splitter
@@ -343,7 +348,7 @@ class TopicBasedChunking(BaseStrategy):
         texts = [c.content for c in base_chunks if c.content]
         if not texts:
             return []
-            
+
         topics_matrix = self.topic_provider.assign_topics(texts, **self.provider_kwargs)
 
         topic_map: Dict[str, List[ChunkPayload]] = {}
@@ -353,24 +358,19 @@ class TopicBasedChunking(BaseStrategy):
                     topic_map[topic] = []
                 topic_map[topic].append(chunk)
 
-        return [
-            TopicChunkPayload(topic=t, children=c) 
-            for t, c in topic_map.items()
-        ]
+        return [TopicChunkPayload(topic=t, children=c) for t, c in topic_map.items()]
 
     def to_node(self, payload: Any) -> ChunkNode:
         """
         Converts a TopicChunkPayload into a TopicChunkNode preserving hierarchy.
         """
         if isinstance(payload, TopicChunkPayload):
-            children_nodes = [
-                super(TopicBasedChunking, self).to_node(c) 
-                for c in payload.children
-            ] if payload.children else []
-            
-            return TopicChunkNode(
-                topic=payload.topic,
-                children=children_nodes
+            children_nodes = (
+                [super(TopicBasedChunking, self).to_node(c) for c in payload.children]
+                if payload.children
+                else []
             )
-            
+
+            return TopicChunkNode(topic=payload.topic, children=children_nodes)
+
         return super().to_node(payload)
