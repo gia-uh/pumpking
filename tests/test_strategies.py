@@ -13,16 +13,27 @@ from pumpking.strategies.basic import (
     SlidingWindowChunking,
     AdaptiveChunking,
 )
-from pumpking.models import NERResult, TopicChunkNode, TopicChunkPayload
-from pumpking.protocols import NERProviderProtocol, SummaryProviderProtocol
+from pumpking.models import (
+    NERResult,
+    TopicChunkNode,
+    TopicChunkPayload,
+    ContextualChunkNode,
+    ContextualChunkPayload,
+    ChunkNode,    
+)
+from pumpking.protocols import (
+    NERProviderProtocol,
+    SummaryProviderProtocol,
+    ContextualProviderProtocol,
+)
 from pumpking.strategies.advanced import (
     EntityBasedChunking,
     HierarchicalChunking,
     SummaryChunkingStrategy,
     TopicBasedChunking,
+    ContextualChunking
 )
 from pumpking.strategies.providers import LLMProvider
-
 
 COMPLEX_MARKDOWN = """# System Architecture
 
@@ -559,13 +570,14 @@ class MockTopicProvider:
     """
     Mock provider for thematic classification.
     """
+
     def assign_topics(self, chunks: List[str], **kwargs: Any) -> List[List[str]]:
         """
         Simulates global taxonomy assignment based on segment content.
         """
         if not chunks:
             return []
-            
+
         results = []
         for text in chunks:
             topics = []
@@ -578,6 +590,7 @@ class MockTopicProvider:
             results.append(topics)
         return results
 
+
 def test_topic_based_chunking_logic():
     """
     Tests the core grouping logic and multi-topic support.
@@ -585,17 +598,18 @@ def test_topic_based_chunking_logic():
     provider = MockTopicProvider()
     strategy = TopicBasedChunking(topic_provider=provider)
     context = ExecutionContext()
-    
+
     data = "Blockchain y tecnología.\n\nEl PIB y la economía.\n\nTecnología financiera."
-    
+
     payloads = strategy.execute(data, context)
-    
+
     assert len(payloads) >= 2
     tech_payload = next(p for p in payloads if p.topic == "Tecnología")
     assert len(tech_payload.children) == 2
-    
+
     econ_payload = next(p for p in payloads if p.topic == "Economía")
     assert len(econ_payload.children) == 1
+
 
 def test_topic_chunking_pipeline_integration():
     """
@@ -603,24 +617,26 @@ def test_topic_chunking_pipeline_integration():
     """
     provider = MockTopicProvider()
     strategy = TopicBasedChunking(topic_provider=provider)
-    
+
     topic_step = Step(strategy, alias="AnalisisTematico")
     pipeline = PumpkingPipeline() >> topic_step
-    
+
     doc_root = pipeline.run("Blockchain en la economía.\n\nContenido general.")
-    
+
     assert len(doc_root.children[0].children) > 0
-    
+
     topic_nodes = [
-        node for node in doc_root.children[0].children 
+        node
+        for node in doc_root.children[0].children
         if isinstance(node, TopicChunkNode)
     ]
-    
+
     assert len(topic_nodes) > 0
     for node in topic_nodes:
         assert node.strategy_label == "AnalisisTematico"
         assert hasattr(node, "topic")
         assert node.content is None
+
 
 def test_topic_chunking_empty_input():
     """
@@ -628,9 +644,10 @@ def test_topic_chunking_empty_input():
     """
     provider = MockTopicProvider()
     strategy = TopicBasedChunking(topic_provider=provider)
-    
+
     payloads = strategy.execute("", ExecutionContext())
     assert payloads == []
+
 
 def test_topic_chunking_to_node_conversion():
     """
@@ -638,14 +655,120 @@ def test_topic_chunking_to_node_conversion():
     """
     provider = MockTopicProvider()
     strategy = TopicBasedChunking(topic_provider=provider)
-    
+
     payload = TopicChunkPayload(
         topic="Salud",
-        children=[{"content": "Texto de prueba", "content_raw": "Texto de prueba"}]
+        children=[{"content": "Texto de prueba", "content_raw": "Texto de prueba"}],
+    )
+
+    node = strategy.to_node(payload)
+
+    assert isinstance(node, TopicChunkNode)
+    assert node.topic == "Salud"
+    assert len(node.children) == 1
+    
+class MockContextualProvider:
+    """
+    Mock provider that simulates batch context assignment.
+    """
+    def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
+        if not chunks:
+            return []
+        return [f"Context for block {i}: {text[:10]}" for i, text in enumerate(chunks)]
+
+class SpyContextualStrategy(BaseStrategy):
+    """
+    Spy to verify contextual data propagation.
+    """
+    def __init__(self):
+        self.received_contexts: List[str] = []
+
+    def execute(self, data: Any, context: ExecutionContext) -> Any:
+        if isinstance(data, ContextualChunkPayload):
+            self.received_contexts.append(data.context)
+        return data
+
+def test_contextual_chunking_basic_flow():
+    """
+    Tests the core logic of batch context assignment.
+    """
+    mock_provider = MockContextualProvider()
+    strategy = ContextualChunking(
+        splitter=ParagraphChunking(), 
+        provider=mock_provider
+    )
+    context = ExecutionContext()
+    
+    text = "First paragraph.\n\nSecond paragraph."
+    results = strategy.execute(text, context)
+    
+    assert len(results) == 2
+    assert isinstance(results[0], ContextualChunkPayload)
+    assert results[0].content == "First paragraph."
+    assert "Context for block 0" in results[0].context
+    assert "Context for block 1" in results[1].context
+
+def test_contextual_chunking_preserves_annotations():
+    """
+    Verifies that original annotations and new context coexist.
+    """
+    mock_provider = MockContextualProvider()
+    strategy = ContextualChunking(provider=mock_provider)
+    
+    class MockAnnotator(BaseStrategy):
+        def execute(self, data: str, context: ExecutionContext) -> dict:
+            return {"marked": True}
+        
+    context = ExecutionContext(annotators={"plugin": MockAnnotator()})
+    
+    results = strategy.execute("Some text", context)
+    
+    assert len(results) == 1
+    assert results[0].annotations["plugin"]["marked"] is True
+    assert "Context for block 0" in results[0].context
+
+def test_contextual_chunking_pipeline_integration():
+    """
+    Tests how contextual nodes are integrated into the final document root.
+    """
+    mock_provider = MockContextualProvider()
+    strategy = ContextualChunking(provider=mock_provider)
+    
+    step = Step(strategy, alias="ContextualStep")
+    pipeline = PumpkingPipeline() >> step
+    
+    text = "Paragraph one.\n\nParagraph two."
+    root = pipeline.run(text)
+    
+    contextual_nodes = root.children[0].children
+    
+    assert len(contextual_nodes) == 2
+    assert isinstance(contextual_nodes[0], ContextualChunkNode)
+    assert contextual_nodes[0].strategy_label == "ContextualStep"
+    assert "Context for block 0" in contextual_nodes[0].context
+
+def test_contextual_chunking_to_node_conversion():
+    """
+    Verifies the transformation from payload to specialized graph node.
+    """
+    strategy = ContextualChunking()
+    payload = ContextualChunkPayload(
+        content="Raw content",
+        context="Situational grounding",
+        annotations={"score": 0.9}
     )
     
     node = strategy.to_node(payload)
     
-    assert isinstance(node, TopicChunkNode)
-    assert node.topic == "Salud"
-    assert len(node.children) == 1
+    assert isinstance(node, ContextualChunkNode)
+    assert node.context == "Situational grounding"
+    assert node.content == "Raw content"
+    assert node.annotations["score"] == 0.9
+
+def test_contextual_chunking_empty_input():
+    """
+    Ensures graceful handling of empty data.
+    """
+    strategy = ContextualChunking()
+    results = strategy.execute("", ExecutionContext())
+    assert results == []
