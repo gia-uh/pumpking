@@ -50,3 +50,14 @@ class SummaryProviderProtocol(Protocol):
         Generates a concise summary of the provided text.
         """
         ...
+        
+@runtime_checkable
+class TopicProviderProtocol(Protocol):
+    """
+    Protocol for providers that assign thematic labels to text blocks.
+    """
+    def assign_topics(self, chunks: List[str], **kwargs: Any) -> List[List[str]]:
+        """
+        Assigns a list of topics to each input fragment.
+        """
+        ...

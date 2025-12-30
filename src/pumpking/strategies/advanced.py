@@ -1,11 +1,19 @@
 import markdown
 from html.parser import HTMLParser
 from typing import List, Optional
-from pumpking.models import ChunkPayload, ChunkNode, EntityChunkPayload, EntityChunkNode
+from pumpking.models import (
+    ChunkPayload,
+    ChunkNode,
+    EntityChunkPayload,
+    EntityChunkNode,
+    TopicChunkNode,
+    TopicChunkPayload,
+)
 from pumpking.protocols import (
     ExecutionContext,
     NERProviderProtocol,
     SummaryProviderProtocol,
+    TopicProviderProtocol
 )
 from pumpking.strategies.base import BaseStrategy
 from pumpking.strategies.basic import SentenceChunking, AdaptiveChunking
@@ -173,11 +181,12 @@ class EntityBasedChunking(BaseStrategy):
     Strategy that groups text by entities using a NER provider.
     Delegates splitting to SentenceChunking for robust sentence boundary detection.
     """
+
     def __init__(
-        self, 
+        self,
         ner_provider: Optional[NERProviderProtocol] = None,
         window_size: int = 20,
-        window_overlap: int = 5
+        window_overlap: int = 5,
     ) -> None:
         self.ner_provider = ner_provider or LLMProvider()
         self.window_size = window_size
@@ -189,7 +198,7 @@ class EntityBasedChunking(BaseStrategy):
             return []
 
         sentence_payloads = self.splitter.execute(data, context)
-        
+
         if not sentence_payloads:
             return []
 
@@ -200,31 +209,31 @@ class EntityBasedChunking(BaseStrategy):
         clean_segments_for_ner = [p.content for p in sentence_payloads]
 
         ner_results = self.ner_provider.extract_entities(
-            clean_segments_for_ner, 
-            window_size=self.window_size, 
-            window_overlap=self.window_overlap
+            clean_segments_for_ner,
+            window_size=self.window_size,
+            window_overlap=self.window_overlap,
         )
-        
+
         entity_payloads = []
-        
+
         for result in ner_results:
             children = []
-            
+
             for index in result.indices:
                 if 0 <= index < len(sentence_payloads):
                     children.append(sentence_payloads[index])
-            
+
             if children:
                 entity_node = EntityChunkPayload(
                     entity=result.entity,
                     type=result.label,
                     content=None,
-                    children=children
+                    children=children,
                 )
                 entity_payloads.append(entity_node)
-            
+
         return entity_payloads
-    
+
     def to_node(self, payload: ChunkPayload) -> ChunkNode:
         if isinstance(payload, EntityChunkPayload):
             children_nodes = []
@@ -235,7 +244,7 @@ class EntityBasedChunking(BaseStrategy):
                         content=chunk.content,
                         content_raw=chunk.content_raw,
                         annotations=chunk.annotations,
-                        children=[]
+                        children=[],
                     )
                     for chunk in payload.children
                 ]
@@ -246,16 +255,17 @@ class EntityBasedChunking(BaseStrategy):
                 content=payload.content,
                 content_raw=payload.content_raw,
                 annotations=payload.annotations,
-                children=children_nodes
+                children=children_nodes,
             )
-        
+
         # Fallback for non-entity payloads (Standard ChunkNode)
         return ChunkNode(
             content=payload.content,
             content_raw=payload.content_raw,
             annotations=payload.annotations,
-            children=[]
+            children=[],
         )
+
 
 class SummaryChunkingStrategy(BaseStrategy):
     """
@@ -267,11 +277,12 @@ class SummaryChunkingStrategy(BaseStrategy):
     The resulting payload uses the summary as the main content (for indexing)
     and preserves the original text in content_raw (for retrieval).
     """
+
     def __init__(
-        self, 
-        provider: Optional[SummaryProviderProtocol] = None, 
-        min_chunk_size: int = 1000, 
-        max_chunk_size: int = 4000
+        self,
+        provider: Optional[SummaryProviderProtocol] = None,
+        min_chunk_size: int = 1000,
+        max_chunk_size: int = 4000,
     ) -> None:
         self.provider = provider or LLMProvider()
         self.splitter = AdaptiveChunking(min_chunk_size, max_chunk_size)
@@ -282,20 +293,84 @@ class SummaryChunkingStrategy(BaseStrategy):
 
         empty_context = ExecutionContext()
         raw_blocks = self.splitter.execute(data, empty_context)
-        
+
         summary_payloads = []
-        
+
         for block in raw_blocks:
             if not block.content:
                 continue
 
             summary_text = self.provider.summarize(block.content)
-            
+
             payload = self._apply_annotators_to_payload(
-                content=summary_text,
-                context=context,
-                content_raw=block.content
+                content=summary_text, context=context, content_raw=block.content
             )
             summary_payloads.append(payload)
-            
+
         return summary_payloads
+
+
+from typing import Any, List, Optional, Dict
+from pumpking.models import ChunkPayload, ChunkNode, TopicChunkPayload, TopicChunkNode
+from pumpking.protocols import ExecutionContext, TopicProviderProtocol
+from pumpking.strategies.base import BaseStrategy
+from pumpking.strategies.basic import ParagraphChunking
+
+class TopicBasedChunking(BaseStrategy):
+    """
+    Strategy that groups text fragments into thematic containers.
+    
+    Allows multi-membership where a single fragment can belong to several topics.
+    """
+    def __init__(
+        self, 
+        topic_provider: TopicProviderProtocol,
+        splitter: BaseStrategy = ParagraphChunking(),
+        **kwargs: Any
+    ) -> None:
+        self.topic_provider = topic_provider
+        self.splitter = splitter
+        self.provider_kwargs = kwargs
+
+    def execute(self, data: str, context: ExecutionContext) -> List[TopicChunkPayload]:
+        """
+        Splits text using the internal splitter and groups results by topics.
+        """
+        base_chunks = self.splitter.execute(data, context)
+        if not base_chunks:
+            return []
+
+        texts = [c.content for c in base_chunks if c.content]
+        if not texts:
+            return []
+            
+        topics_matrix = self.topic_provider.assign_topics(texts, **self.provider_kwargs)
+
+        topic_map: Dict[str, List[ChunkPayload]] = {}
+        for chunk, topics in zip(base_chunks, topics_matrix):
+            for topic in topics:
+                if topic not in topic_map:
+                    topic_map[topic] = []
+                topic_map[topic].append(chunk)
+
+        return [
+            TopicChunkPayload(topic=t, children=c) 
+            for t, c in topic_map.items()
+        ]
+
+    def to_node(self, payload: Any) -> ChunkNode:
+        """
+        Converts a TopicChunkPayload into a TopicChunkNode preserving hierarchy.
+        """
+        if isinstance(payload, TopicChunkPayload):
+            children_nodes = [
+                super(TopicBasedChunking, self).to_node(c) 
+                for c in payload.children
+            ] if payload.children else []
+            
+            return TopicChunkNode(
+                topic=payload.topic,
+                children=children_nodes
+            )
+            
+        return super().to_node(payload)
