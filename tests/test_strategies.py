@@ -29,7 +29,7 @@ from pumpking.protocols import (
 from pumpking.strategies.advanced import (
     EntityBasedChunking,
     HierarchicalChunking,
-    SummaryChunkingStrategy,
+    SummaryChunking,
     TopicBasedChunking,
     ContextualChunking
 )
@@ -528,7 +528,7 @@ class MockSummaryProvider(SummaryProviderProtocol):
 
 def test_summary_chunking_basic_flow():
     mock_provider = MockSummaryProvider()
-    strategy = SummaryChunkingStrategy(
+    strategy = SummaryChunking(
         provider=mock_provider, min_chunk_size=10, max_chunk_size=100
     )
     context = ExecutionContext()
@@ -544,7 +544,7 @@ def test_summary_chunking_basic_flow():
 
 def test_summary_chunking_integration_with_adaptive_logic():
     mock_provider = MockSummaryProvider()
-    strategy = SummaryChunkingStrategy(
+    strategy = SummaryChunking(
         provider=mock_provider, min_chunk_size=5, max_chunk_size=20
     )
     context = ExecutionContext()
@@ -562,7 +562,7 @@ def test_summary_chunking_integration_with_adaptive_logic():
 
 
 def test_summary_chunking_defaults_to_llm_provider():
-    strategy = SummaryChunkingStrategy()
+    strategy = SummaryChunking()
     assert isinstance(strategy.provider, LLMProvider)
 
 

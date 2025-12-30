@@ -273,7 +273,7 @@ class EntityBasedChunking(BaseStrategy):
         )
 
 
-class SummaryChunkingStrategy(BaseStrategy):
+class SummaryChunking(BaseStrategy):
     """
     Splits text into adaptive chunks and generates a summary for each.
 
