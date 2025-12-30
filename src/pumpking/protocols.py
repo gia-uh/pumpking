@@ -61,3 +61,20 @@ class TopicProviderProtocol(Protocol):
         Assigns a list of topics to each input fragment.
         """
         ...
+        
+@runtime_checkable
+class ContextualProviderProtocol(Protocol):
+    """
+    Protocol for providers that generate situational context for fragments.
+    """
+    def get_document_context(self, document_text: str) -> str:
+        """
+        Extracts a global semantic summary from the entire document.
+        """
+        ...
+
+    def get_chunk_context(self, document_context: str, chunk_text: str) -> str:
+        """
+        Generates the specific situational grounding for a given fragment.
+        """
+        ...

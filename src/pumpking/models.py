@@ -127,3 +127,15 @@ class TopicChunkNode(ChunkNode):
     """
     topic: str
     children: Optional[List[ChunkNode]] = Field(default_factory=list)
+    
+class ContextualChunkPayload(ChunkPayload):
+    """
+    Payload for chunks that include contextual information.
+    """
+    context: str
+
+class ContextualChunkNode(ChunkNode):
+    """
+    Node representing a chunk with its associated contextual grounding.
+    """
+    context: str
