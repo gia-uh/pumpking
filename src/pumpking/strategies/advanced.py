@@ -1,11 +1,10 @@
 import markdown
 from html.parser import HTMLParser
 from typing import List, Optional
-
-from pumpking.models import NERResult, ChunkPayload, ChunkNode, EntityChunkPayload, EntityChunkNode
-from pumpking.protocols import ExecutionContext, NERProviderProtocol
+from pumpking.models import ChunkPayload, ChunkNode, EntityChunkPayload, EntityChunkNode
+from pumpking.protocols import ExecutionContext, NERProviderProtocol, SummaryProviderProtocol
 from pumpking.strategies.base import BaseStrategy
-from pumpking.strategies.basic import SentenceChunking 
+from pumpking.strategies.basic import SentenceChunking, AdaptiveChunking
 from pumpking.strategies.providers import LLMProvider
 from pumpking.utils import clean_text
 
@@ -220,3 +219,46 @@ class EntityBasedChunking(BaseStrategy):
             )
         
         return super().to_node(payload)
+    
+class SummaryChunkingStrategy(BaseStrategy):
+    """
+    Splits text into adaptive chunks and generates a summary for each.
+
+    This strategy uses AdaptiveChunking to create semantically complete text blocks
+    within a specific size range. Each block is then summarized by the provided
+    SummaryProvider. If no provider is specified, it defaults to LLMProvider.
+    The resulting payload uses the summary as the main content (for indexing)
+    and preserves the original text in content_raw (for retrieval).
+    """
+    def __init__(
+        self, 
+        provider: Optional[SummaryProviderProtocol] = None, 
+        min_chunk_size: int = 1000, 
+        max_chunk_size: int = 4000
+    ) -> None:
+        self.provider = provider or LLMProvider()
+        self.splitter = AdaptiveChunking(min_chunk_size, max_chunk_size)
+
+    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+        if not data:
+            return []
+
+        empty_context = ExecutionContext()
+        raw_blocks = self.splitter.execute(data, empty_context)
+        
+        summary_payloads = []
+        
+        for block in raw_blocks:
+            if not block.content:
+                continue
+
+            summary_text = self.provider.summarize(block.content)
+            
+            payload = self._apply_annotators_to_payload(
+                content=summary_text,
+                context=context,
+                content_raw=block.content
+            )
+            summary_payloads.append(payload)
+            
+        return summary_payloads

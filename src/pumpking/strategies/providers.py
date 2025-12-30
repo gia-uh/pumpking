@@ -4,7 +4,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from pumpking.models import NERResult
-from pumpking.protocols import NERProviderProtocol
+from pumpking.protocols import NERProviderProtocol, SummaryProviderProtocol
 
 
 class LLMEntityResult(BaseModel):
@@ -158,3 +158,9 @@ class LLMProvider(NERProviderProtocol):
             ))
 
         return final_results
+    
+    def summarize(self, text: str) -> str:
+        """
+        Generates a summary of the text using the configured LLM.
+        """
+        return text

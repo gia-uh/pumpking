@@ -41,3 +41,20 @@ class ExecutionContext(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
     annotators: Dict[str, StrategyProtocol] = {}
+    
+@runtime_checkable
+class SummaryProviderProtocol(Protocol):
+    """
+    Protocol for Summary providers.
+    """
+    def summarize(self, text: str) -> str:
+        """
+        Generates a concise summary of the provided text.
+
+        Args:
+            text: The input text to summarize.
+
+        Returns:
+            str: The generated summary.
+        """
+        ...
