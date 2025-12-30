@@ -396,34 +396,27 @@ class ContextualChunking(BaseStrategy):
     def execute(self, data: str, context: ExecutionContext) -> List[ContextualChunkPayload]:
         """
         Executes the contextual enrichment process by splitting the text and 
-        generating situational grounding for each chunk, applying annotators.
+        generating situational grounding for each chunk via batch processing.
         """
         if not data:
             return []
 
-        doc_context = self.provider.get_document_context(data)
-        
-        # We use an empty context for initial split to avoid double annotation
         base_payloads = self.splitter.execute(data, ExecutionContext())
         
+        texts = [p.content for p in base_payloads if p.content]
+        if not texts:
+            return []
+
+        contexts = self.provider.assign_context(texts)
+        
         contextual_payloads = []
-        for p in base_payloads:
-            if not p.content:
-                continue
-                
-            situational_context = self.provider.get_chunk_context(
-                doc_context, 
-                p.content
-            )
-            
-            # Use helper to create payload with context AND apply current annotators
+        for p, situational_context in zip(base_payloads, contexts):
             payload = self._apply_annotators_to_payload(
                 content=p.content,
                 context=context,
                 content_raw=p.content_raw
             )
             
-            # Transform to specialized payload
             contextual_payload = ContextualChunkPayload(
                 content=payload.content,
                 content_raw=payload.content_raw,

@@ -67,14 +67,8 @@ class ContextualProviderProtocol(Protocol):
     """
     Protocol for providers that generate situational context for fragments.
     """
-    def get_document_context(self, document_text: str) -> str:
+    def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
         """
-        Extracts a global semantic summary from the entire document.
-        """
-        ...
-
-    def get_chunk_context(self, document_context: str, chunk_text: str) -> str:
-        """
-        Generates the specific situational grounding for a given fragment.
+        Assigns a situational context string to each input fragment.
         """
         ...
