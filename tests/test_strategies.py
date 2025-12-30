@@ -2,7 +2,7 @@ import pytest
 
 from typing import List, Any
 from pumpking.models import ChunkPayload
-from pumpking.pipeline import annotate, Step
+from pumpking.pipeline import annotate, Step, PumpkingPipeline
 from pumpking.protocols import ExecutionContext
 from pumpking.strategies.base import BaseStrategy
 from pumpking.strategies.basic import (
@@ -13,11 +13,16 @@ from pumpking.strategies.basic import (
     SlidingWindowChunking,
     AdaptiveChunking,
 )
-from pumpking.models import NERResult
+from pumpking.models import NERResult, TopicChunkNode, TopicChunkPayload
 from pumpking.protocols import NERProviderProtocol, SummaryProviderProtocol
-from pumpking.strategies.advanced import EntityBasedChunking, HierarchicalChunking, SummaryChunkingStrategy
-from pumpking.strategies.advanced import SummaryChunkingStrategy
+from pumpking.strategies.advanced import (
+    EntityBasedChunking,
+    HierarchicalChunking,
+    SummaryChunkingStrategy,
+    TopicBasedChunking,
+)
 from pumpking.strategies.providers import LLMProvider
+
 
 COMPLEX_MARKDOWN = """# System Architecture
 
@@ -430,7 +435,7 @@ class MockNERProvider(NERProviderProtocol):
                 NERResult(
                     entity="Default Mock",
                     label="MISC",
-                    indices=list(range(len(sentences)))
+                    indices=list(range(len(sentences))),
                 )
             ]
         return self.predefined_results
@@ -438,13 +443,13 @@ class MockNERProvider(NERProviderProtocol):
 
 def test_entity_chunking_complex_narrative_overlap_and_coref():
     text = "Apple released the Vision Pro. It implies a new era. Tim Cook announced it in Cupertino. The device costs $3500."
-    
+
     mock_results = [
         NERResult(entity="Apple", label="ORG", indices=[0, 2]),
         NERResult(entity="Vision Pro", label="PROD", indices=[0, 1, 2, 3]),
-        NERResult(entity="Tim Cook", label="PER", indices=[2])
+        NERResult(entity="Tim Cook", label="PER", indices=[2]),
     ]
-    
+
     provider = MockNERProvider(predefined_results=mock_results)
     strategy = EntityBasedChunking(ner_provider=provider)
     context = ExecutionContext()
@@ -452,7 +457,7 @@ def test_entity_chunking_complex_narrative_overlap_and_coref():
     payloads = strategy.execute(text, context)
 
     assert len(payloads) == 3
-    
+
     apple_node = next(p for p in payloads if p.entity == "Apple")
     assert apple_node.children is not None
     assert len(apple_node.children) == 2
@@ -462,39 +467,39 @@ def test_entity_chunking_complex_narrative_overlap_and_coref():
 
 def test_entity_chunking_preserves_messy_format_in_raw():
     raw_text = "**SpaceX** launched the _Starship_ containing [Link](http://x.com)."
-    
+
     mock_results = [NERResult(entity="SpaceX", label="ORG", indices=[0])]
-    
+
     provider = MockNERProvider(predefined_results=mock_results)
     strategy = EntityBasedChunking(ner_provider=provider)
     context = ExecutionContext()
 
     payloads = strategy.execute(raw_text, context)
-    
+
     assert len(payloads) == 1
     child = payloads[0].children[0]
-    
+
     assert "**" not in child.content
     assert "http" not in child.content
     assert "[" not in child.content
-    
+
     assert child.content_raw == raw_text
 
 
 def test_entity_chunking_discontinuous_segments():
     text = "Python is great. Java is verbose. Python is also dynamic."
-    
+
     mock_results = [
         NERResult(entity="Python", label="LANG", indices=[0, 2]),
-        NERResult(entity="Java", label="LANG", indices=[1])
+        NERResult(entity="Java", label="LANG", indices=[1]),
     ]
-    
+
     provider = MockNERProvider(predefined_results=mock_results)
     strategy = EntityBasedChunking(ner_provider=provider)
     payloads = strategy.execute(text, ExecutionContext())
-    
+
     python_node = next(p for p in payloads if p.entity == "Python")
-    
+
     assert len(python_node.children) == 2
     assert "is great" in python_node.children[0].content
     assert "is also dynamic" in python_node.children[1].content
@@ -505,17 +510,20 @@ class MockSummaryProvider(SummaryProviderProtocol):
     """
     Mock provider that performs a simple deterministic transformation.
     """
+
     def summarize(self, text: str, **kwargs: Any) -> str:
         return f"summarized_content_of_[{text}]"
 
 
 def test_summary_chunking_basic_flow():
     mock_provider = MockSummaryProvider()
-    strategy = SummaryChunkingStrategy(provider=mock_provider, min_chunk_size=10, max_chunk_size=100)
+    strategy = SummaryChunkingStrategy(
+        provider=mock_provider, min_chunk_size=10, max_chunk_size=100
+    )
     context = ExecutionContext()
 
     text = "Original Text"
-    
+
     payloads = strategy.execute(text, context)
 
     assert len(payloads) == 1
@@ -525,15 +533,17 @@ def test_summary_chunking_basic_flow():
 
 def test_summary_chunking_integration_with_adaptive_logic():
     mock_provider = MockSummaryProvider()
-    strategy = SummaryChunkingStrategy(provider=mock_provider, min_chunk_size=5, max_chunk_size=20)
+    strategy = SummaryChunkingStrategy(
+        provider=mock_provider, min_chunk_size=5, max_chunk_size=20
+    )
     context = ExecutionContext()
 
     text = "Short. Another short. A very long sentence that exceeds limit."
-    
+
     payloads = strategy.execute(text, context)
 
     assert len(payloads) >= 2
-    
+
     for p in payloads:
         expected_summary = f"summarized_content_of_[{p.content_raw}]"
         assert p.content == expected_summary
@@ -543,3 +553,99 @@ def test_summary_chunking_integration_with_adaptive_logic():
 def test_summary_chunking_defaults_to_llm_provider():
     strategy = SummaryChunkingStrategy()
     assert isinstance(strategy.provider, LLMProvider)
+
+
+class MockTopicProvider:
+    """
+    Mock provider for thematic classification.
+    """
+    def assign_topics(self, chunks: List[str], **kwargs: Any) -> List[List[str]]:
+        """
+        Simulates global taxonomy assignment based on segment content.
+        """
+        if not chunks:
+            return []
+            
+        results = []
+        for text in chunks:
+            topics = []
+            if "tecnología" in text.lower() or "blockchain" in text.lower():
+                topics.append("Tecnología")
+            if "economía" in text.lower() or "pib" in text.lower():
+                topics.append("Economía")
+            if not topics:
+                topics.append("General")
+            results.append(topics)
+        return results
+
+def test_topic_based_chunking_logic():
+    """
+    Tests the core grouping logic and multi-topic support.
+    """
+    provider = MockTopicProvider()
+    strategy = TopicBasedChunking(topic_provider=provider)
+    context = ExecutionContext()
+    
+    data = "Blockchain y tecnología.\n\nEl PIB y la economía.\n\nTecnología financiera."
+    
+    payloads = strategy.execute(data, context)
+    
+    assert len(payloads) >= 2
+    tech_payload = next(p for p in payloads if p.topic == "Tecnología")
+    assert len(tech_payload.children) == 2
+    
+    econ_payload = next(p for p in payloads if p.topic == "Economía")
+    assert len(econ_payload.children) == 1
+
+def test_topic_chunking_pipeline_integration():
+    """
+    Tests integration with PumpkingPipeline using Step objects.
+    """
+    provider = MockTopicProvider()
+    strategy = TopicBasedChunking(topic_provider=provider)
+    
+    topic_step = Step(strategy, alias="AnalisisTematico")
+    pipeline = PumpkingPipeline() >> topic_step
+    
+    doc_root = pipeline.run("Blockchain en la economía.\n\nContenido general.")
+    
+    assert len(doc_root.children[0].children) > 0
+    
+    topic_nodes = [
+        node for node in doc_root.children[0].children 
+        if isinstance(node, TopicChunkNode)
+    ]
+    
+    assert len(topic_nodes) > 0
+    for node in topic_nodes:
+        assert node.strategy_label == "AnalisisTematico"
+        assert hasattr(node, "topic")
+        assert node.content is None
+
+def test_topic_chunking_empty_input():
+    """
+    Verifies behavior with empty strings.
+    """
+    provider = MockTopicProvider()
+    strategy = TopicBasedChunking(topic_provider=provider)
+    
+    payloads = strategy.execute("", ExecutionContext())
+    assert payloads == []
+
+def test_topic_chunking_to_node_conversion():
+    """
+    Verifies polymorphic conversion from payload to node.
+    """
+    provider = MockTopicProvider()
+    strategy = TopicBasedChunking(topic_provider=provider)
+    
+    payload = TopicChunkPayload(
+        topic="Salud",
+        children=[{"content": "Texto de prueba", "content_raw": "Texto de prueba"}]
+    )
+    
+    node = strategy.to_node(payload)
+    
+    assert isinstance(node, TopicChunkNode)
+    assert node.topic == "Salud"
+    assert len(node.children) == 1
