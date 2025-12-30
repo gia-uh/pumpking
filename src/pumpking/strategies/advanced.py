@@ -2,18 +2,23 @@ import markdown
 from html.parser import HTMLParser
 from typing import List, Optional
 from pumpking.models import ChunkPayload, ChunkNode, EntityChunkPayload, EntityChunkNode
-from pumpking.protocols import ExecutionContext, NERProviderProtocol, SummaryProviderProtocol
+from pumpking.protocols import (
+    ExecutionContext,
+    NERProviderProtocol,
+    SummaryProviderProtocol,
+)
 from pumpking.strategies.base import BaseStrategy
 from pumpking.strategies.basic import SentenceChunking, AdaptiveChunking
 from pumpking.strategies.providers import LLMProvider
 from pumpking.utils import clean_text
+
 
 class _SectionNode:
     def __init__(self, level: int, title: str = "") -> None:
         self.level = level
         self.title = title
         self.content_buffer: List[str] = []
-        self.children: List['_SectionNode'] = []
+        self.children: List["_SectionNode"] = []
 
     def get_text_content(self) -> str:
         return "".join(self.content_buffer)
@@ -66,6 +71,7 @@ class HierarchicalChunking(BaseStrategy):
     by the provided list of sub-strategies. The resulting payload includes
     aggregated content and raw content for the entire subtree.
     """
+
     def __init__(self, strategies: List[BaseStrategy]) -> None:
         self.strategies = strategies
 
@@ -82,7 +88,9 @@ class HierarchicalChunking(BaseStrategy):
 
         root_text = parser.root.get_text_content()
         if root_text and root_text.strip() and self.strategies:
-            root_body_chunks = self._apply_strategy_chain(root_text, self.strategies, context)
+            root_body_chunks = self._apply_strategy_chain(
+                root_text, self.strategies, context
+            )
             top_level_payloads.extend(root_body_chunks)
 
         for child_node in parser.root.children:
@@ -90,16 +98,22 @@ class HierarchicalChunking(BaseStrategy):
 
         return top_level_payloads
 
-    def _create_section_payload(self, node: _SectionNode, context: ExecutionContext) -> ChunkPayload:
+    def _create_section_payload(
+        self, node: _SectionNode, context: ExecutionContext
+    ) -> ChunkPayload:
         body_payloads = []
         children_section_payloads = []
 
         text_content = node.get_text_content()
         if text_content and text_content.strip() and self.strategies:
-            body_payloads = self._apply_strategy_chain(text_content, self.strategies, context)
+            body_payloads = self._apply_strategy_chain(
+                text_content, self.strategies, context
+            )
 
         for child_node in node.children:
-            children_section_payloads.append(self._create_section_payload(child_node, context))
+            children_section_payloads.append(
+                self._create_section_payload(child_node, context)
+            )
 
         header_clean = node.title
         header_raw = f"{'#' * node.level} {node.title}"
@@ -108,10 +122,12 @@ class HierarchicalChunking(BaseStrategy):
         body_raw = "".join([p.content_raw or p.content for p in body_payloads])
 
         children_clean = " ".join([p.content for p in children_section_payloads])
-        children_raw = "\n".join([p.content_raw or p.content for p in children_section_payloads])
+        children_raw = "\n".join(
+            [p.content_raw or p.content for p in children_section_payloads]
+        )
 
         full_content = f"{header_clean} {body_clean} {children_clean}".strip()
-        
+
         parts_raw = [header_raw]
         if body_raw:
             parts_raw.append(body_raw)
@@ -122,17 +138,17 @@ class HierarchicalChunking(BaseStrategy):
         all_children_nodes = body_payloads + children_section_payloads
 
         payload = self._apply_annotators_to_payload(
-            content=full_content,
-            context=context,
-            content_raw=full_content_raw
+            content=full_content, context=context, content_raw=full_content_raw
         )
-        
+
         if all_children_nodes:
             payload.children = all_children_nodes
 
         return payload
 
-    def _apply_strategy_chain(self, content: str, strategies: List[BaseStrategy], context: ExecutionContext) -> List[ChunkPayload]:
+    def _apply_strategy_chain(
+        self, content: str, strategies: List[BaseStrategy], context: ExecutionContext
+    ) -> List[ChunkPayload]:
         if not strategies:
             return []
 
@@ -143,19 +159,29 @@ class HierarchicalChunking(BaseStrategy):
 
         if remaining_strategies:
             for chunk in chunks:
-                children = self._apply_strategy_chain(chunk.content, remaining_strategies, context)
+                children = self._apply_strategy_chain(
+                    chunk.content, remaining_strategies, context
+                )
                 if children:
                     chunk.children = children
-        
+
         return chunks
-    
+
+
 class EntityBasedChunking(BaseStrategy):
     """
     Strategy that groups text by entities using a NER provider.
     Delegates splitting to SentenceChunking for robust sentence boundary detection.
     """
-    def __init__(self, ner_provider: Optional[NERProviderProtocol] = None) -> None:
+    def __init__(
+        self, 
+        ner_provider: Optional[NERProviderProtocol] = None,
+        window_size: int = 20,
+        window_overlap: int = 5
+    ) -> None:
         self.ner_provider = ner_provider or LLMProvider()
+        self.window_size = window_size
+        self.window_overlap = window_overlap
         self.splitter = SentenceChunking()
 
     def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
@@ -173,7 +199,11 @@ class EntityBasedChunking(BaseStrategy):
 
         clean_segments_for_ner = [p.content for p in sentence_payloads]
 
-        ner_results = self.ner_provider.extract_entities(clean_segments_for_ner)
+        ner_results = self.ner_provider.extract_entities(
+            clean_segments_for_ner, 
+            window_size=self.window_size, 
+            window_overlap=self.window_overlap
+        )
         
         entity_payloads = []
         
@@ -200,7 +230,8 @@ class EntityBasedChunking(BaseStrategy):
             children_nodes = []
             if payload.children:
                 children_nodes = [
-                    chunk.to_node() if hasattr(chunk, 'to_node') else ChunkNode(
+                    # If child payloads are generic, map them to simple ChunkNodes
+                    ChunkNode(
                         content=chunk.content,
                         content_raw=chunk.content_raw,
                         annotations=chunk.annotations,
@@ -218,8 +249,14 @@ class EntityBasedChunking(BaseStrategy):
                 children=children_nodes
             )
         
-        return super().to_node(payload)
-    
+        # Fallback for non-entity payloads (Standard ChunkNode)
+        return ChunkNode(
+            content=payload.content,
+            content_raw=payload.content_raw,
+            annotations=payload.annotations,
+            children=[]
+        )
+
 class SummaryChunkingStrategy(BaseStrategy):
     """
     Splits text into adaptive chunks and generates a summary for each.

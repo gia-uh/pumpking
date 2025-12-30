@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional, Dict, Set, Tuple
+from typing import List, Optional, Dict, Set, Tuple, Any
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -20,7 +20,7 @@ class LLMResponseWrapper(BaseModel):
     entities: List[LLMEntityResult]
 
 
-class LLMProvider(NERProviderProtocol):
+class LLMProvider(NERProviderProtocol, SummaryProviderProtocol):
     """
     Production-ready LLM Provider with Sliding Window support.
     Delegates semantic grouping to LLM and performs deterministic index mapping.
@@ -29,23 +29,16 @@ class LLMProvider(NERProviderProtocol):
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        model: str = "gpt-4o",
-        temperature: float = 0.0,
-        window_size: int = 20,
-        window_overlap: int = 5
+        default_model: str = "gpt-4o",
+        default_temperature: float = 0.0,
     ) -> None:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.client = None
         if self.api_key:
             self.client = OpenAI(api_key=self.api_key, base_url=base_url)
 
-        self.model = model
-        self.temperature = temperature
-        self.window_size = window_size
-        self.window_overlap = window_overlap
-
-        if self.window_overlap >= self.window_size:
-            raise ValueError("window_overlap must be strictly less than window_size")
+        self.default_model = default_model
+        self.default_temperature = default_temperature
 
     def _map_sentences_to_indices(self, source_sentences: List[str], target_sentences: List[str]) -> List[int]:
         indices = []
@@ -67,7 +60,12 @@ class LLMProvider(NERProviderProtocol):
 
         return sorted(list(set(indices)))
 
-    def _process_window(self, window_sentences: List[str]) -> List[NERResult]:
+    def _process_window(
+        self, 
+        window_sentences: List[str], 
+        model: str, 
+        temperature: float
+    ) -> List[NERResult]:
         if not self.client:
             raise ValueError("OpenAI Client not initialized. Please provide an API Key.")
 
@@ -99,13 +97,13 @@ class LLMProvider(NERProviderProtocol):
         )
 
         completion = self.client.beta.chat.completions.parse(
-            model=self.model,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": formatted_input},
             ],
             response_format=LLMResponseWrapper,
-            temperature=self.temperature,
+            temperature=temperature,
         )
 
         results = []
@@ -121,22 +119,36 @@ class LLMProvider(NERProviderProtocol):
                     ))
         return results
 
-    def extract_entities(self, sentences: List[str]) -> List[NERResult]:
+    def extract_entities(
+        self, 
+        sentences: List[str], 
+        window_size: int = 20, 
+        window_overlap: int = 5,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        **kwargs: Any
+    ) -> List[NERResult]:
         if not sentences:
             return []
+            
+        if window_overlap >= window_size:
+            raise ValueError("window_overlap must be strictly less than window_size")
+
+        active_model = model or self.default_model
+        active_temp = temperature if temperature is not None else self.default_temperature
 
         merged_entities: Dict[Tuple[str, str], Set[int]] = {}
 
-        step = self.window_size - self.window_overlap
+        step = window_size - window_overlap
         step = max(1, step)
 
         for i in range(0, len(sentences), step):
-            window = sentences[i : i + self.window_size]
+            window = sentences[i : i + window_size]
             
-            if i > 0 and len(window) < self.window_overlap and len(sentences) > self.window_size:
+            if i > 0 and len(window) < window_overlap and len(sentences) > window_size:
                 continue
 
-            window_results = self._process_window(window)
+            window_results = self._process_window(window, active_model, active_temp)
 
             for res in window_results:
                 key = (res.entity, res.label)
@@ -146,7 +158,7 @@ class LLMProvider(NERProviderProtocol):
                 global_indices = {local_idx + i for local_idx in res.indices}
                 merged_entities[key].update(global_indices)
 
-            if i + self.window_size >= len(sentences):
+            if i + window_size >= len(sentences):
                 break
 
         final_results = []
@@ -158,9 +170,40 @@ class LLMProvider(NERProviderProtocol):
             ))
 
         return final_results
-    
-    def summarize(self, text: str) -> str:
-        """
-        Generates a summary of the text using the configured LLM.
-        """
-        return text
+
+    def summarize(
+        self, 
+        text: str, 
+        model: Optional[str] = None, 
+        temperature: Optional[float] = None, 
+        **kwargs: Any
+    ) -> str:
+        if not text:
+            return ""
+
+        if not self.client:
+            raise ValueError("OpenAI Client not initialized. Please provide an API Key.")
+            
+        active_model = model or self.default_model
+        active_temp = temperature if temperature is not None else self.default_temperature
+
+        system_prompt = (
+            "You are an expert technical writer specializing in semantic compression. "
+            "Summarize the provided text concisely. "
+            "CRITICAL INSTRUCTIONS:\n"
+            "1. Preserve all key entities (names, organizations, locations, dates).\n"
+            "2. Maintain the original semantic meaning and intent.\n"
+            "3. Output ONLY the summary text. Do not include introductory phrases like 'Here is a summary'.\n"
+            "4. Respond in the SAME LANGUAGE as the input text."
+        )
+
+        completion = self.client.chat.completions.create(
+            model=active_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ],
+            temperature=active_temp,
+        )
+
+        return completion.choices[0].message.content or ""

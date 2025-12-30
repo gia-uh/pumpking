@@ -13,9 +13,11 @@ from pumpking.strategies.basic import (
     SlidingWindowChunking,
     AdaptiveChunking,
 )
-from pumpking.models import NERResult, EntityChunkPayload
-from pumpking.protocols import NERProviderProtocol
-from pumpking.strategies.advanced import EntityBasedChunking, HierarchicalChunking
+from pumpking.models import NERResult
+from pumpking.protocols import NERProviderProtocol, SummaryProviderProtocol
+from pumpking.strategies.advanced import EntityBasedChunking, HierarchicalChunking, SummaryChunkingStrategy
+from pumpking.strategies.advanced import SummaryChunkingStrategy
+from pumpking.strategies.providers import LLMProvider
 
 COMPLEX_MARKDOWN = """# System Architecture
 
@@ -419,7 +421,8 @@ class MockNERProvider(NERProviderProtocol):
     def __init__(self, predefined_results: List[NERResult] = None):
         self.predefined_results = predefined_results or []
 
-    def extract_entities(self, sentences: List[str]) -> List[NERResult]:
+    # Updated to accept **kwargs (window_size, etc)
+    def extract_entities(self, sentences: List[str], **kwargs: Any) -> List[NERResult]:
         if not self.predefined_results:
             if not sentences:
                 return []
@@ -496,3 +499,47 @@ def test_entity_chunking_discontinuous_segments():
     assert "is great" in python_node.children[0].content
     assert "is also dynamic" in python_node.children[1].content
     assert "Java" not in "".join([c.content for c in python_node.children])
+
+
+class MockSummaryProvider(SummaryProviderProtocol):
+    """
+    Mock provider that performs a simple deterministic transformation.
+    """
+    def summarize(self, text: str, **kwargs: Any) -> str:
+        return f"summarized_content_of_[{text}]"
+
+
+def test_summary_chunking_basic_flow():
+    mock_provider = MockSummaryProvider()
+    strategy = SummaryChunkingStrategy(provider=mock_provider, min_chunk_size=10, max_chunk_size=100)
+    context = ExecutionContext()
+
+    text = "Original Text"
+    
+    payloads = strategy.execute(text, context)
+
+    assert len(payloads) == 1
+    assert payloads[0].content == "summarized_content_of_[Original Text]"
+    assert payloads[0].content_raw == "Original Text"
+
+
+def test_summary_chunking_integration_with_adaptive_logic():
+    mock_provider = MockSummaryProvider()
+    strategy = SummaryChunkingStrategy(provider=mock_provider, min_chunk_size=5, max_chunk_size=20)
+    context = ExecutionContext()
+
+    text = "Short. Another short. A very long sentence that exceeds limit."
+    
+    payloads = strategy.execute(text, context)
+
+    assert len(payloads) >= 2
+    
+    for p in payloads:
+        expected_summary = f"summarized_content_of_[{p.content_raw}]"
+        assert p.content == expected_summary
+        assert p.content_raw is not None
+
+
+def test_summary_chunking_defaults_to_llm_provider():
+    strategy = SummaryChunkingStrategy()
+    assert isinstance(strategy.provider, LLMProvider)
