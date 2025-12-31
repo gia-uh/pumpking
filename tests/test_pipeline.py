@@ -1,134 +1,131 @@
-from typing import Any, List
-from pumpking.protocols import ExecutionContext, StrategyProtocol
+from typing import List
 from pumpking.pipeline import Step, PumpkingPipeline, annotate
+from pumpking.models import ChunkNode, ChunkPayload
+from pumpking.protocols import ExecutionContext
+from pumpking.strategies.base import BaseStrategy
 
-# --- Mocks ---
+# --- Mocks and Data ---
 
-class MockStrategy:
-    """Generic mock strategy."""
-    SUPPORTED_INPUTS: List[Any] = [str]
-    PRODUCED_OUTPUT: Any = str
 
-    def execute(self, data: Any, context: ExecutionContext) -> Any:
-        return data
+class MockSpecialNode(ChunkNode):
+    """Generic specialized node for testing structural inheritance."""
 
-class SentimentAnalysis(MockStrategy):
-    """Named mock for testing class-name inference."""
-    pass
+    special_attr: str = "default"
 
-class NamedEntityRecognition(MockStrategy):
-    """Another named mock."""
-    pass
 
-# --- Tests for Step & Alias ---
+class MockSpecialPayload(ChunkPayload):
+    """Generic specialized payload providing the node class hint."""
 
-def test_step_alias_defaults():
-    """
-    Case: Step(Strategy())
-    Expectation: alias should be 'StrategyClass'.
-    """
-    step = Step(SentimentAnalysis())
-    assert step.alias == "SentimentAnalysis"
+    special_attr: str = "custom_value"
+    __node_class__ = MockSpecialNode
 
-def test_step_alias_explicit():
-    """
-    Case: Step(Strategy(), alias="my_step")
-    Expectation: alias should be 'my_step'.
-    """
-    step = Step(SentimentAnalysis(), alias="custom_sentiment")
-    assert step.alias == "custom_sentiment"
 
-# --- Tests for Annotation Helper ---
+class MockSplitter(BaseStrategy):
+    """
+    Returns multiple strings to verify branching.
+    Uses helper to apply context annotations to list items.
+    """
 
-def test_annotate_alias_defaults():
-    """
-    Case: Step | annotate(Strategy())
-    Expectation: annotator key should be 'StrategyClass'.
-    """
-    step = Step(MockStrategy()) | annotate(SentimentAnalysis())
-    
-    assert "SentimentAnalysis" in step.annotators
-    assert isinstance(step.annotators["SentimentAnalysis"], SentimentAnalysis)
+    def execute(self, text: str, context: ExecutionContext) -> List[ChunkPayload]:
+        parts = ["part_a", "part_b"]
+        return self._apply_annotators_to_list(parts, context)
 
-def test_annotate_alias_explicit():
-    """
-    Case: Step | annotate(Strategy(), alias="my_anno")
-    Expectation: annotator key should be 'my_anno'.
-    """
-    step = Step(MockStrategy()) | annotate(SentimentAnalysis(), alias="version_2")
-    
-    assert "version_2" in step.annotators
-    assert "SentimentAnalysis" not in step.annotators
 
-# --- Tests for Pipeline Structure ---
+class MockIdentityStrategy(BaseStrategy):
+    """
+    Returns the input as a single result.
+    CRITICAL FIX: Explicitly applies annotators from context using helper.
+    """
 
-def test_linear_pipeline():
-    """
-    Case: Step >> Step
-    """
-    s1 = Step(MockStrategy(), alias="start")
-    s2 = Step(MockStrategy(), alias="end")
-    
-    pipeline = s1 >> s2
-    
-    assert len(pipeline.steps) == 2
-    assert pipeline.steps[0].alias == "start"
-    assert pipeline.steps[1].alias == "end"
+    def execute(self, text: str, context: ExecutionContext) -> ChunkPayload:
+        return self._apply_annotators_to_payload(text, context)
 
-def test_parallel_pipeline_structure():
-    """
-    Case: Step >> [Step, Step]
-    """
-    start = Step(MockStrategy())
-    branch_a = Step(SentimentAnalysis())
-    branch_b = Step(NamedEntityRecognition())
-    
-    pipeline = start >> [branch_a, branch_b]
-    
-    # Structure verification
-    assert len(pipeline.steps) == 2
-    
-    # Second step should be a list (Parallel Block)
-    parallel_block = pipeline.steps[1]
-    assert isinstance(parallel_block, list)
-    assert len(parallel_block) == 2
-    
-    # Verify branches
-    assert parallel_block[0].alias == "SentimentAnalysis"
-    assert parallel_block[1].alias == "NamedEntityRecognition"
 
-def test_complex_mixed_structure():
-    """
-    Case: Step >> [ Step | annotate, Step ]
-    Verifies that annotations work inside parallel blocks.
-    """
-    # Branch 1: Sentiment + Annotation
-    branch_1 = Step(SentimentAnalysis()) | annotate(NamedEntityRecognition(), alias="ner_check")
-    
-    # Branch 2: Just NER
-    branch_2 = Step(NamedEntityRecognition())
-    
-    pipeline = Step(MockStrategy()) >> [branch_1, branch_2]
-    
-    parallel_block = pipeline.steps[1]
-    
-    # Check Branch 1 annotations
-    b1_node = parallel_block[0]
-    assert b1_node.alias == "SentimentAnalysis"
-    assert "ner_check" in b1_node.annotators
-    
-    # Check Branch 2 annotations (should be empty)
-    b2_node = parallel_block[1]
-    assert b2_node.alias == "NamedEntityRecognition"
-    assert b2_node.annotators == {}
+class MockSpecStrategy(BaseStrategy):
+    """Returns specialized payloads to verify the dynamic factory."""
 
-def test_chaining_syntax():
+    def execute(self, text: str, context: ExecutionContext) -> List[MockSpecialPayload]:
+        return [MockSpecialPayload(content="data", content_raw="raw")]
+
+
+class MockAnnotator(BaseStrategy):
+    """Simple annotator strategy."""
+
+    def execute(self, text: str, context: ExecutionContext) -> str:
+        return "annotated"
+
+
+# --- Tests ---
+
+
+def test_pipeline_parallel_branching_logic():
     """
-    Case: (Step >> Step) >> Step
-    Ensures the pipeline object itself supports '>>'.
+    Ensures that parallel steps ([Step, Step]) branch from the same parent.
+    Verified by counting sibling branches in the graph.
     """
-    p = Step(MockStrategy()) >> Step(MockStrategy())
-    # Now extend the existing pipeline
-    p = p >> Step(MockStrategy())
-    
-    assert len(p.steps) == 3
+    pipeline = PumpkingPipeline(
+        Step(MockSplitter(), alias="Parent")
+        >> [Step(MockSplitter(), alias="Path1"), Step(MockSplitter(), alias="Path2")]
+    )
+    root = pipeline.run("Input")
+
+    result = root
+    parent_node = result.branches[0]
+
+    assert len(parent_node.branches) == 4
+
+
+def test_dynamic_node_specialization_factory():
+    """
+    Verifies that the factory correctly identifies a specialized node
+    via class hints and maps attributes dynamically.
+    """
+    pipeline = PumpkingPipeline(Step(MockSpecStrategy()))
+    root = pipeline.run("Special Data")
+
+    node = root.branches[0]
+
+    assert isinstance(node, MockSpecialNode)
+    assert node.special_attr == "custom_value"
+
+
+def test_pipeline_annotation_isolation():
+    """
+    Ensures annotators are local to the Step and do not diffuse to the next step.
+    This test previously failed because the Mock ignored the context.
+    """
+    s1 = Step(MockIdentityStrategy(), alias="S1") | annotate(
+        MockAnnotator(), alias="note"
+    )
+    s2 = Step(MockIdentityStrategy(), alias="S2")
+
+    pipeline = PumpkingPipeline(s1 >> s2)
+    root = pipeline.run("Check Annotations")
+
+    node_s1 = root.branches[0]
+    node_s2 = node_s1.branches[0]
+
+    assert "note" in node_s1.results[0].annotations
+    assert node_s1.results[0].annotations["note"] == "annotated"
+
+    assert "note" not in node_s2.results[0].annotations
+
+
+def test_pipeline_sequential_depth():
+    """
+    Verifies that the >> operator creates a deep tree.
+    S1 should be a branch of Root, and S2 should be a branch of S1.
+    """
+    s1 = Step(MockIdentityStrategy(), alias="S1")
+    s2 = Step(MockIdentityStrategy(), alias="S2")
+
+    pipeline = PumpkingPipeline(s1 >> s2)
+    root = pipeline.run("Input")
+
+    assert len(root.branches) == 1
+    node_s1 = root.branches[0]
+    assert node_s1.strategy_label == "S1"
+
+    assert len(node_s1.branches) == 1
+    node_s2 = node_s1.branches[0]
+    assert node_s2.strategy_label == "S2"

@@ -1,83 +1,92 @@
-from typing import Any, List, Union, Set
-
-from pumpking.pipeline import PumpkingPipeline, Step
+from typing import List, Union, Type, Any
+from pumpking.pipeline import Step, PumpkingPipeline
 from pumpking.exceptions import PipelineConfigurationError
-from pumpking.models import ChunkPayload
 
-
-def validate(pipeline: PumpkingPipeline) -> None:
-    steps = pipeline.steps
-    if not steps:
-        return
-
-    for step_block in steps:
-        _validate_block_annotators(step_block)
-        _validate_unique_aliases(step_block)
-
-    for i in range(len(steps) - 1):
-        current_block = steps[i]
-        next_block = steps[i+1]
+def validate(pipeline: Union[Step, List[Any], PumpkingPipeline]) -> None:
+    """
+    Performs static analysis on the pipeline structure.
+    
+    Checks for:
+    1. Type compatibility between sequential steps.
+    2. Input type compatibility for parallel branches.
+    3. Alias uniqueness among sibling steps in parallel blocks.
+    4. Annotator compatibility (must accept string input).
+    
+    Args:
+        pipeline: The definition of the pipeline flow.
         
-        output_type = _get_block_output_type(current_block)
-        _validate_connection(output_type, next_block, step_index=i)
+    Raises:
+        PipelineConfigurationError: If any validation rule is violated.
+    """
+    steps = _normalize_pipeline(pipeline)
+    
+    current_output_type = str
+    
+    for index, item in enumerate(steps):
+        if isinstance(item, Step):
+            _validate_step_compatibility(item, current_output_type)
+            _validate_annotators(item)
+            current_output_type = item.strategy.PRODUCED_OUTPUT
+            
+        elif isinstance(item, list):
+            _validate_parallel_block(item, current_output_type)
+            current_output_type = list
+        else:
+            raise PipelineConfigurationError(f"Invalid item at index {index}: {item}")
 
+def _normalize_pipeline(pipeline: Union[Step, List[Any], PumpkingPipeline]) -> List[Any]:
+    """Converts the input into a standard list of steps/blocks."""
+    if isinstance(pipeline, PumpkingPipeline):
+        return pipeline.steps
+    if isinstance(pipeline, Step):
+        return [pipeline]
+    if isinstance(pipeline, list):
+        return pipeline
+    raise PipelineConfigurationError(f"Unknown pipeline type: {type(pipeline)}")
 
-def _validate_block_annotators(block: Union[Step, List[Step]]) -> None:
-    if isinstance(block, list):
-        for step in block:
-            _check_annotator_compatibility(step)
-    else:
-        _check_annotator_compatibility(block)
-
-
-def _check_annotator_compatibility(step: Step) -> None:
-    for alias, annotator in step.annotators.items():
-        if str not in annotator.SUPPORTED_INPUTS:
-            raise PipelineConfigurationError(
-                f"Annotator '{alias}' (on {step.alias}) requires input types "
-                f"{annotator.SUPPORTED_INPUTS}, but annotators receive 'str'."
-            )
-
-
-def _validate_unique_aliases(block: Union[Step, List[Step]]) -> None:
-    if not isinstance(block, list):
+def _validate_step_compatibility(step: Step, input_type: Type) -> None:
+    """
+    Verifies that the step's strategy supports the type produced by the previous step.
+    """
+    supported = step.strategy.SUPPORTED_INPUTS
+    
+    if Any in supported:
         return
 
-    seen_aliases: Set[str] = set()
-    for step in block:
-        if step.alias in seen_aliases:
+    if input_type not in supported:
+        raise PipelineConfigurationError(
+            f"Type Mismatch: Step '{step.alias}' expects {supported} "
+            f"but receives '{input_type}'."
+        )
+
+def _validate_annotators(step: Step) -> None:
+    """
+    Verifies that all annotators attached to the step support string input,
+    as annotators operate on the raw content payload.
+    """
+    for alias, strategy in step.annotators.items():
+        supported = strategy.SUPPORTED_INPUTS
+        if str not in supported and Any not in supported:
             raise PipelineConfigurationError(
-                f"Duplicate step alias '{step.alias}' found in parallel block."
+                f"Annotator '{alias}' expects {supported} but receives 'str'."
             )
-        seen_aliases.add(step.alias)
 
-
-def _get_block_output_type(block: Union[Step, List[Step]]) -> Any:
-    if isinstance(block, list):
-        return list
-    return block.strategy.PRODUCED_OUTPUT
-
-
-def _validate_connection(output_type: Any, next_block: Union[Step, List[Step]], step_index: int) -> None:
-    def is_compatible(out_type: Any, supported_inputs: List[Any]) -> bool:
-        if out_type in supported_inputs:
-            return True
-        if (out_type == ChunkPayload or out_type == List[ChunkPayload]) and str in supported_inputs:
-            return True
-        return False
-
-    if isinstance(next_block, list):
-        for branch_idx, step in enumerate(next_block):
-            if not is_compatible(output_type, step.strategy.SUPPORTED_INPUTS):
-                raise PipelineConfigurationError(
-                    f"Type Mismatch at Step {step_index} -> {step_index + 1} (Branch {branch_idx}): "
-                    f"Previous step produces '{output_type}', but "
-                    f"'{step.alias}' only supports {step.strategy.SUPPORTED_INPUTS}."
-                )
-    else:
-        if not is_compatible(output_type, next_block.strategy.SUPPORTED_INPUTS):
-            raise PipelineConfigurationError(
-                f"Type Mismatch at Step {step_index} -> {step_index + 1}: "
-                f"Previous step produces '{output_type}', but "
-                f"'{next_block.alias}' only supports {next_block.strategy.SUPPORTED_INPUTS}."
-            )
+def _validate_parallel_block(branches: List[Step], input_type: Type) -> None:
+    """
+    Validates a parallel block for alias collisions and type safety.
+    """
+    aliases = set()
+    
+    for idx, step in enumerate(branches):
+        if not isinstance(step, Step):
+            raise PipelineConfigurationError(f"Parallel block contains non-Step item at index {idx}")
+            
+        if step.alias in aliases:
+            raise PipelineConfigurationError(f"Duplicate step alias '{step.alias}'")
+        aliases.add(step.alias)
+        
+        try:
+            _validate_step_compatibility(step, input_type)
+            _validate_annotators(step)
+        except PipelineConfigurationError as e:
+            raise PipelineConfigurationError(f"Branch {idx}: {str(e)}")

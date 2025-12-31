@@ -1,21 +1,17 @@
 import uuid
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
-
-
 class PumpkingBaseModel(BaseModel):
+    """
+    Base model for all Pumpking components providing recursive dictionary conversion
+    and automatic cleanup of empty or null values.
+    """
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Converts the model to a dictionary, removing empty values recursively.
-        """
         data = self.model_dump(mode="json", exclude_none=True)
         return self._clean_empty(data)
 
     @classmethod
     def _clean_empty(cls, data: Any) -> Any:
-        """
-        Helper to recursively remove None, empty dicts, and empty lists.
-        """
         if isinstance(data, dict):
             return {
                 k: v_clean
@@ -30,57 +26,27 @@ class PumpkingBaseModel(BaseModel):
             ]
         return data
 
-
 class NERResult(BaseModel):
     """
-    Represents a detected entity and the indices of the sentences associated with it.
+    Data structure representing the identified entity, its category label, 
+    and the indices of the sentences where it was detected.
     """
-
     entity: str
     label: str
     indices: List[int]
 
-
 class ChunkPayload(PumpkingBaseModel):
     """
-    Transport object returned by Strategies containing processing results.
+    Base data container produced by strategies. It encapsulates the processed text,
+    original raw content, and maintains semantic hierarchy through children.
     """
-
     content: Optional[str] = None
     content_raw: Optional[str] = None
     annotations: Dict[str, Any] = Field(default_factory=dict)
-    children: Optional[List["ChunkPayload"]] = None
-
-
-class EntityChunkPayload(ChunkPayload):
-    """
-    Specialized payload for Entity nodes containing specific entity metadata.
-    """
-
-    entity: str
-    type: str
-    content: Optional[str] = None
-    content_raw: Optional[str] = None
-    children: Optional[List[ChunkPayload]] = None
-
-
-class ChunkNode(PumpkingBaseModel):
-    """
-    A node in the processing graph representing a state in the pipeline history.
-    """
-
-    id: uuid.UUID = Field(default_factory=uuid.uuid4)
-    parent_id: Optional[uuid.UUID] = None
-    strategy_label: Optional[str] = Field(
-        None, description="The alias of the step that generated this node."
-    )
-    content: Optional[str] = None
-    content_raw: Optional[str] = None
-    annotations: Dict[str, Any] = Field(default_factory=dict)
-    children: Optional[List["ChunkNode"]] = Field(default_factory=list)
+    children: List["ChunkPayload"] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def clean_content_raw(self) -> "ChunkNode":
+    def clean_content_raw(self) -> "ChunkPayload":
         """
         Removes content_raw if it is identical to content to save space.
         """
@@ -88,54 +54,66 @@ class ChunkNode(PumpkingBaseModel):
             self.content_raw = None
         return self
 
-
-class EntityChunkNode(ChunkNode):
+class EntityChunkPayload(ChunkPayload):
     """
-    Specialized node for persisting Entity information in the document tree.
+    Specialized payload for entity-based strategies containing the entity name 
+    and its classification type.
     """
-
     entity: str
     type: str
-    content: Optional[str] = None
-    content_raw: Optional[str] = None
-    children: Optional[List[ChunkNode]] = Field(default_factory=list)
-
-
-class DocumentRoot(PumpkingBaseModel):
-    """
-    The root container for a processed document tree.
-    """
-
-    id: uuid.UUID = Field(default_factory=uuid.uuid4)
-    document: str
-    original_filename: Optional[str] = None
-    children: List[ChunkNode] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
 
 class TopicChunkPayload(ChunkPayload):
     """
-    Specialized payload for topic-based semantic grouping.
+    Specialized payload for thematic strategies containing the identified topic.
     """
     topic: str
-    children: Optional[List[ChunkPayload]] = None
 
+class ContextualChunkPayload(ChunkPayload):
+    """
+    Specialized payload for chunks enriched with situational or global context.
+    """
+    context: str
+
+class ChunkNode(PumpkingBaseModel):
+    """
+    A node in the execution graph. It separates the strategy output (results)
+    from the subsequent flow of the pipeline (branches).
+    """
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    parent_id: Optional[uuid.UUID] = None
+    strategy_label: Optional[str] = None
+    results: List[ChunkPayload] = Field(default_factory=list)
+    branches: List["ChunkNode"] = Field(default_factory=list)
+
+class EntityChunkNode(ChunkNode):
+    """
+    Node specialization that preserves entity metadata for direct access 
+    within the execution graph.
+    """
+    entity: Optional[str] = None
+    type: Optional[str] = None
 
 class TopicChunkNode(ChunkNode):
     """
-    Graph node representing a topic that aggregates related fragments.
+    Node specialization that preserves topic metadata for direct access 
+    within the execution graph.
     """
-    topic: str
-    children: Optional[List[ChunkNode]] = Field(default_factory=list)
-    
-class ContextualChunkPayload(ChunkPayload):
-    """
-    Payload for chunks that include contextual information.
-    """
-    context: str
+    topic: Optional[str] = None
 
 class ContextualChunkNode(ChunkNode):
     """
-    Node representing a chunk with its associated contextual grounding.
+    Node specialization that preserves contextual metadata for direct access 
+    within the execution graph.
     """
-    context: str
+    context: Optional[str] = None
+
+class DocumentRoot(PumpkingBaseModel):
+    """
+    The root of the processed document tree. It holds the original document 
+    source and marks the starting points of all execution branches.
+    """
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    document: str
+    original_filename: Optional[str] = None
+    branches: List[ChunkNode] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)

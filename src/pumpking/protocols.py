@@ -1,10 +1,11 @@
 from typing import Any, Dict, List, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict
-from pumpking.models import NERResult, ChunkNode
+from pumpking.models import NERResult 
 
 class ExecutionContext(BaseModel):
     """
     Holds configuration and state for the current execution step.
+    Defined as a Pydantic model to allow arbitrary types and validation.
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
     annotators: Dict[str, Any] = {}
@@ -18,12 +19,7 @@ class StrategyProtocol(Protocol):
     def execute(self, data: Any, context: ExecutionContext) -> Any:
         """
         Executes the strategy logic on the provided data.
-        """
-        ...
-
-    def to_node(self, payload: Any) -> ChunkNode:
-        """
-        Converts a strategy-specific payload into a graph node.
+        Returns raw data or ChunkPayloads, but never ChunkNodes.
         """
         ...
 
