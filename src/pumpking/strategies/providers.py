@@ -65,21 +65,15 @@ class LLMTaxonomyResponse(BaseModel):
 
 class LLMContextAssignment(BaseModel):
     """
-    Structured assignment of context to a specific block.
+    Data structure for mapping generated context to source fragments via content echoing.
     """
+    quote: str = Field(..., description="A short excerpt from the start of the fragment")
+    context: str = Field(..., description="The situational anchoring information")
 
-    block_id: str = Field(..., description="The ID of the block (e.g., 'B1').")
-    context: str = Field(..., description="The situational context for this block.")
-    summary: str = Field(
-        ..., description="A concise summary of this block for the next iteration."
-    )
-
-
-class LLMBatchContextResponse(BaseModel):
+class LLMContextResponse(BaseModel):
     """
-    Response schema for batch context processing.
+    Container for batch-processed contextual assignments.
     """
-
     assignments: List[LLMContextAssignment]
 
 
@@ -572,61 +566,78 @@ class LLMProvider(
 
     def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
         """
-        Assigns situational context to each chunk using a rolling memory approach.
+        Assigns situational context to fragments using a narrative-aware sliding window 
+        and robust token-overlap matching to ensure alignment.
         """
-        if not chunks:
-            return []
-
-        if not self.client:
-            raise ValueError(
-                "OpenAI Client not initialized. Please provide an API Key."
-            )
-
-        active_model = kwargs.get("model", self.default_model)
-        active_temp = kwargs.get("temperature", self.default_temperature)
-
         batch_size = kwargs.get("batch_size", 5)
-        results = ["" for _ in chunks]
-        previous_summary = "Start of document."
+        overlap_size = kwargs.get("overlap_size", 3)
+        results = [""] * len(chunks)
+
+        def get_tokens(text: str) -> set:
+            return set("".join(filter(str.isalnum, word)).lower() for word in text.split())
 
         for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
-            marked_text = "\n".join([f"[B{j}] {text}" for j, text in enumerate(batch)])
+            current_batch = chunks[i : i + batch_size]
+            
+            start_overlap = max(0, i - overlap_size)
+            prev_chunks = chunks[start_overlap : i]
+            background_text = "\n---\n".join(prev_chunks) if prev_chunks else "start of document."
+            
+            targets_text = "\n\n".join([f"TARGET FRAGMENT:\n{t}" for t in current_batch])
 
             system_prompt = (
-                "You are an expert technical writer. For each provided text block [Bk], "
-                "generate a situational context that anchors it to the document flow. "
-                "Use the provided PREVIOUS SUMMARY to maintain continuity. "
-                "Also, provide a new summary for the current set of blocks to be used next. "
-                "CRITICAL: Respond in the SAME LANGUAGE as the input text."
+                "You are an expert Knowledge Graph Engineer specializing in Contextual Retrieval.\n\n"
+                "GOAL: Provide situational context for isolated fragments.\n"
+                "1. IDENTITY: Resolve pronouns using names from the background.\n"
+                "2. LOCATION: Anchor the fragment to its document section or parent topic.\n"
+                "3. CAUSALITY: Explain the event in the background that leads to this fragment.\n\n"
+                "CONSTRAINTS:\n"
+                "- DO NOT summarize the target fragment. Context must be purely ADDITIVE.\n"
+                "- Use the BACKGROUND as the source of truth.\n"
+                "- Return a JSON mapping for each fragment using its starting words as 'quote'."
             )
 
             user_prompt = (
-                f"PREVIOUS SUMMARY: {previous_summary}\n\nBLOCKS:\n{marked_text}"
+                f"<BACKGROUND (READ ONLY)>\n{background_text}\n</BACKGROUND>\n\n"
+                f"<TARGETS (PROCESS THESE)>\n{targets_text}\n</TARGETS>"
             )
 
-            completion = self.client.beta.chat.completions.parse(
-                model=active_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format=LLMBatchContextResponse,
-                temperature=active_temp,
-            )
+            try:
+                completion = self.client.beta.chat.completions.parse(
+                    model=kwargs.get("model", self.default_model),
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format=LLMContextResponse,
+                    temperature=0.0,
+                )
 
-            if completion.choices[0].message.parsed:
-                batch_assignments = completion.choices[0].message.parsed.assignments
-                for asm in batch_assignments:
-                    try:
-                        idx_in_batch = int(asm.block_id.replace("B", ""))
-                        global_idx = i + idx_in_batch
-                        if global_idx < len(chunks):
-                            results[global_idx] = asm.context
-                    except (ValueError, IndexError):
-                        continue
+                if completion.choices[0].message.parsed:
+                    # Pre-calculate token sets for the current batch
+                    batch_token_sets = [
+                        (global_idx, get_tokens(chunk[:50])) 
+                        for global_idx, chunk in enumerate(current_batch, start=i)
+                    ]
 
-                if batch_assignments:
-                    previous_summary = batch_assignments[-1].summary
+                    for assignment in completion.choices[0].message.parsed.assignments:
+                        assignment_tokens = get_tokens(assignment.quote)
+                        if not assignment_tokens:
+                            continue
+
+                        best_match_idx = -1
+                        max_overlap = 0
+
+                        for global_idx, chunk_tokens in batch_token_sets:
+                            overlap = len(assignment_tokens.intersection(chunk_tokens))
+                            if overlap > max_overlap:
+                                max_overlap = overlap
+                                best_match_idx = global_idx
+                        
+                        if best_match_idx != -1 and max_overlap > 0:
+                            results[best_match_idx] = assignment.context
+
+            except Exception:
+                continue
 
         return results
