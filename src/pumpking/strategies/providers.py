@@ -1,15 +1,17 @@
 import os
 import difflib
+import uuid
 from typing import List, Optional, Dict, Set, Tuple, Any
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from pumpking.models import NERResult
+from pumpking.models import NERResult, ChunkPayload, ZettelChunkPayload
 from pumpking.protocols import (
     NERProviderProtocol,
     SummaryProviderProtocol,
     TopicProviderProtocol,
     ContextualProviderProtocol,
+    ZettelProviderProtocol
 )
 
 
@@ -82,12 +84,44 @@ class LLMTopicResponse(BaseModel):
 
     assignments: List[LLMTopicAssignment]
 
+class LLMZettelRef(BaseModel):
+    """
+    Data Transfer Object representing a single Zettel extracted by the LLM.
+    """
+    concept_handle: str = Field(
+        ..., 
+        description="A short, unique, and descriptive title (2-5 words) identifying this specific concept. This handle acts as a semantic anchor for linking."
+    )
+    hypothesis: str = Field(
+        ..., 
+        description="The complete, atomic idea or thesis statement. It must be self-contained and understood without reading the original source text."
+    )
+    tags: List[str] = Field(
+        default_factory=list,
+        description="Taxonomic keywords for categorization."
+    )
+    direct_quotes: List[str] = Field(
+        ..., 
+        description="Exact text fragments copied verbatim from the provided input that support this hypothesis. Used to trace back to source chunks."
+    )
+    related_concept_handles: List[str] = Field(
+        default_factory=list, 
+        description="A list of 'concept_handles' representing semantic relationships. Can include handles generated in the current batch or provided in the previous context."
+    )
+
+class LLMZettelResponse(BaseModel):
+    """
+    Container for the list of Zettels extracted in a single LLM inference call.
+    """
+    zettels: List[LLMZettelRef]
+
 
 class LLMProvider(
     NERProviderProtocol,
     SummaryProviderProtocol,
     TopicProviderProtocol,
     ContextualProviderProtocol,
+    ZettelProviderProtocol
 ):
     """
     Production-ready LLM Provider with Sliding Window support.
@@ -641,3 +675,185 @@ class LLMProvider(
                 continue
 
         return results
+    
+    def extract_zettels(self, chunks: List[ChunkPayload], batch_size: int = 5, **kwargs: Any) -> List[ZettelChunkPayload]:
+        """
+        Implements the ZettelProviderProtocol.extract_zettels method.
+        Processes chunks in batches with context propagation to generate interconnected Zettels.
+        """
+        if not chunks:
+            return []
+
+        global_handle_map: Dict[str, uuid.UUID] = {}
+        raw_extraction_results: List[Dict[str, Any]] = []
+
+        batches = [chunks[i:i + batch_size] for i in range(0, len(chunks), batch_size)]
+
+        for batch_index, batch in enumerate(batches):
+            try:
+                previous_concepts = list(global_handle_map.keys())
+                system_prompt = self._build_zettel_system_prompt()
+                user_prompt = self._build_zettel_user_prompt(batch, previous_concepts)
+
+                completion = self.client.beta.chat.completions.parse(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format=LLMZettelResponse,
+                    **kwargs
+                )
+
+                response_data = completion.choices[0].message.parsed
+                
+                if not response_data or not response_data.zettels:
+                    continue
+
+                for zettel_dto in response_data.zettels:
+                    handle_key = zettel_dto.concept_handle.strip().lower()
+                    
+                    if handle_key not in global_handle_map:
+                        global_handle_map[handle_key] = uuid.uuid4()
+                    
+                    current_uuid = global_handle_map[handle_key]
+
+                    evidence_children = self._resolve_zettel_evidence(zettel_dto.direct_quotes, batch)
+
+                    raw_extraction_results.append({
+                        "uuid": current_uuid,
+                        "dto": zettel_dto,
+                        "children": evidence_children
+                    })
+
+            except Exception as e:
+                self.logger.error(f"Error processing Zettel batch {batch_index}: {str(e)}")
+                continue
+
+        return self._finalize_zettel_graph(raw_extraction_results, global_handle_map)
+
+    def _build_zettel_system_prompt(self) -> str:
+        """
+        Constructs the system instructions specific to Zettelkasten extraction.
+        """
+        return (
+            "You are an expert Knowledge Architect specialized in the Zettelkasten method. "
+            "Your task is to decompose the provided text into atomic, interconnected notes (Zettels).\n\n"
+            "CRITICAL RULES:\n"
+            "1. ATOMICITY: Each Zettel must contain exactly ONE distinct idea or concept.\n"
+            "2. INDEPENDENCE: The 'hypothesis' must be self-explanatory and fully understood without "
+            "reading the original text.\n"
+            "3. LANGUAGE: All generated content (hypothesis, titles, tags) MUST BE in the SAME LANGUAGE "
+            "as the input text.\n"
+            "4. EVIDENCE: You must copy exact text fragments into 'direct_quotes' to prove your hypothesis.\n"
+            "5. CONNECTIVITY: Link your new notes to previously identified concepts (provided in context) "
+            "or to other new notes in this batch using their 'concept_handle'."
+        )
+
+    def _build_zettel_user_prompt(self, batch: List[ChunkPayload], previous_concepts: List[str]) -> str:
+        """
+        Constructs the user prompt for Zettel extraction with context injection.
+        """
+        formatted_context = ""
+        if previous_concepts:
+            formatted_context = (
+                "### PREVIOUS KNOWLEDGE CONTEXT\n"
+                "The following concepts have already been identified in previous sections. "
+                "Use these names in 'related_concept_handles' if the new text relates to them:\n"
+                f"- {', '.join(previous_concepts)}\n\n"
+            )
+
+        formatted_text_blocks = []
+        for chunk in batch:
+            content = chunk.content if chunk.content else ""
+            formatted_text_blocks.append(f"--- BLOCK ---\n{content}")
+        
+        input_text = "\n".join(formatted_text_blocks)
+
+        return (
+            f"{formatted_context}"
+            "### INPUT TEXT TO ANALYZE\n"
+            f"{input_text}\n\n"
+            "### TASK\n"
+            "Extract atomic Zettels from the INPUT TEXT above. Ensure outputs are in the language of the text."
+        )
+
+    def _resolve_zettel_evidence(self, quotes: List[str], batch: List[ChunkPayload]) -> List[ChunkPayload]:
+        """
+        Maps textual quotes provided by the LLM back to the original physical ChunkPayload objects
+        using fuzzy matching.
+        """
+        matched_chunks: List[ChunkPayload] = []
+        
+        for quote in quotes:
+            best_match = None
+            best_score = 0.0
+            
+            quote_tokens = set(quote.lower().split())
+            if not quote_tokens:
+                continue
+
+            for chunk in batch:
+                if not chunk.content:
+                    continue
+                
+                chunk_tokens = set(chunk.content.lower().split())
+                if not chunk_tokens:
+                    continue
+
+                intersection = quote_tokens.intersection(chunk_tokens)
+                union = quote_tokens.union(chunk_tokens)
+                
+                score = len(intersection) / len(union) if union else 0.0
+                
+                if score > best_score and score > 0.05: 
+                    best_score = score
+                    best_match = chunk
+
+            if best_score < 0.9: 
+                for chunk in batch:
+                    if chunk.content and quote in chunk.content:
+                        best_match = chunk
+                        break
+            
+            if best_match and best_match not in matched_chunks:
+                matched_chunks.append(best_match)
+
+        return matched_chunks
+
+    def _finalize_zettel_graph(
+        self, 
+        raw_results: List[Dict[str, Any]], 
+        handle_map: Dict[str, uuid.UUID]
+    ) -> List[ZettelChunkPayload]:
+        """
+        Resolves textual handle references into UUIDs and constructs the final payloads.
+        """
+        final_payloads = []
+
+        for item in raw_results:
+            dto: LLMZettelRef = item["dto"]
+            current_uuid = item["uuid"]
+            children = item["children"]
+
+            resolved_related_ids: List[uuid.UUID] = []
+            
+            for handle in dto.related_concept_handles:
+                clean_handle = handle.strip().lower()
+                target_uuid = handle_map.get(clean_handle)
+                
+                if target_uuid and target_uuid != current_uuid:
+                    if target_uuid not in resolved_related_ids:
+                        resolved_related_ids.append(target_uuid)
+
+            payload = ZettelChunkPayload(
+                id=current_uuid,
+                hypothesis=dto.hypothesis,
+                tags=dto.tags,
+                related_zettel_ids=resolved_related_ids,
+                children=children,
+                content=None 
+            )
+            final_payloads.append(payload)
+
+        return final_payloads
