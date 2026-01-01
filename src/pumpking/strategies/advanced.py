@@ -10,6 +10,7 @@ from pumpking.models import (
     TopicChunkPayload,
     ContextualChunkNode,
     ContextualChunkPayload,
+    ZettelChunkPayload
 )
 from pumpking.protocols import (
     ExecutionContext,
@@ -17,6 +18,7 @@ from pumpking.protocols import (
     SummaryProviderProtocol,
     TopicProviderProtocol,
     ContextualProviderProtocol,
+    ZettelProviderProtocol
 )
 from pumpking.strategies.base import BaseStrategy
 from pumpking.strategies.basic import (
@@ -466,3 +468,90 @@ class ContextualChunking(BaseStrategy):
             results.append(payload)
 
         return results
+
+class ZettelkastenChunking(BaseStrategy):
+    """
+    Implements the Zettelkasten method for knowledge extraction. This strategy 
+    transforms linear documents into a network of atomic, interconnected notes.
+
+    The process involves three main stages:
+    1. Splitting: The input document is segmented into physical units (e.g., 
+       paragraphs) using a subordinate splitting strategy.
+    2. Extraction: A ZettelProvider analyzes the segments to produce atomic 
+       ZettelChunkPayloads, resolving relationships and assigning evidence.
+    3. Annotation: If annotators are present in the execution context, they 
+       are applied to the 'hypothesis' of each Zettel, enriching the node 
+       with additional metadata (e.g., Named Entities).
+    """
+
+    SUPPORTED_INPUTS = [str]
+    PRODUCED_OUTPUT = List[ZettelChunkPayload]
+
+    def __init__(
+        self, 
+        provider: Union[ZettelProviderProtocol, Type[ZettelProviderProtocol]] = LLMProvider,
+        splitter: Union[BaseStrategy, Type[BaseStrategy]] = ParagraphChunking,
+        **kwargs: Any
+    ):
+        """
+        Initializes the strategy with a physical splitter and a semantic provider.
+
+        Args:
+            provider: The provider implementation for concept extraction. Accepts 
+                      either an initialized instance or a class type. Defaults to 
+                      LLMProvider.
+            splitter: The strategy used to split the source text into physical 
+                      fragments. Accepts an instance or a class type. Defaults to 
+                      ParagraphChunking.
+            **kwargs: Arbitrary keyword arguments forwarded to the provider's 
+                      extract_zettels method.
+        """
+        if isinstance(provider, type):
+            self.provider = provider()
+        else:
+            self.provider = provider
+
+        if isinstance(splitter, type):
+            self.splitter = splitter()
+        else:
+            self.splitter = splitter
+
+        self.provider_kwargs = kwargs
+
+    def execute(self, data: Union[str, ChunkPayload], context: ExecutionContext) -> List[ZettelChunkPayload]:
+        """
+        Executes the Zettelkasten extraction pipeline.
+
+        Args:
+            data: The input content, either as a raw string or a ChunkPayload.
+            context: The execution context containing configuration and 
+                registered annotators.
+
+        Returns:
+            A list of ZettelChunkPayload objects representing the extracted 
+            knowledge graph.
+        """
+        base_chunks = self.splitter.execute(data, context)
+
+        if not base_chunks:
+            return []
+
+        payloads_to_process = []
+        for item in base_chunks:
+            if isinstance(item, ChunkPayload):
+                payloads_to_process.append(item)
+            else:
+                payloads_to_process.append(ChunkPayload(content=str(item)))
+
+        zettels = self.provider.extract_zettels(payloads_to_process, **self.provider_kwargs)
+
+        if context.annotators:
+            annotation_context = ExecutionContext()
+            
+            for alias, strategy in context.annotators.items():
+                for zettel in zettels:
+                    if zettel.hypothesis:
+                        annotation_result = strategy.execute(zettel.hypothesis, annotation_context)
+                        zettel.annotations[alias] = annotation_result
+
+        return zettels

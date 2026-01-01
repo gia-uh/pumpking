@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict
-from pumpking.models import NERResult 
+from pumpking.models import NERResult, ChunkPayload, ZettelChunkPayload 
 
 class ExecutionContext(BaseModel):
     """
@@ -66,5 +66,38 @@ class ContextualProviderProtocol(Protocol):
     def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
         """
         Assigns a situational context string to each input fragment.
+        """
+        ...
+        
+@runtime_checkable
+class ZettelProviderProtocol(Protocol):
+    """
+    Defines the contract for providers capable of transforming physical text 
+    fragments into atomic knowledge units (Zettels). Implementations of this 
+    protocol are responsible for semantic analysis, concept synthesis, and 
+    the resolution of local graph relationships.
+    """
+
+    def extract_zettels(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ZettelChunkPayload]:
+        """
+        Analyzes a sequence of input chunks to identify and extract atomic 
+        concepts.
+
+        The provider must ensure that:
+        1. Each returned Zettel contains a synthesized 'hypothesis'.
+        2. The 'children' field of each Zettel is populated with the relevant 
+           ChunkPayload objects from the input that serve as evidence.
+        3. The 'related_zettel_ids' field is populated to reflect semantic 
+           relationships identified between the generated Zettels.
+
+        Args:
+            chunks: A list of ChunkPayload objects representing the raw 
+                textual evidence (e.g., paragraphs or sentences).
+            **kwargs: Additional configuration parameters for the underlying 
+                model or extraction logic.
+
+        Returns:
+            A list of ZettelChunkPayload objects, each representing a distinct 
+            concept with its associated metadata and evidence.
         """
         ...
