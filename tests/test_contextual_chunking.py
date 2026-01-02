@@ -10,30 +10,58 @@ from pumpking.strategies.advanced import ContextualChunking
 class MockAnnotator(BaseStrategy):
     """Spy annotator to verify execution on specific content."""
     def __init__(self):
-        self.last_content = None
+        self.call_history = []
 
     def execute(self, data: str, context: ExecutionContext) -> dict:
-        self.last_content = data
+        self.call_history.append(data)
         return {"checked": True}
 
 class MockContextualProvider(ContextualProviderProtocol):
     """
     Simulates a provider that generates context based on the input list.
+    Updated to return ContextualChunkPayloads as per the new protocol.
     """
-    def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
-        # Returns a mock context for each chunk, e.g., "Context for [Original]"
-        return [f"Context for {c}" for c in chunks]
+    def assign_context(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ContextualChunkPayload]:
+        results = []
+        for chunk in chunks:
+            # Simulate context generation
+            ctx_str = f"Context for {chunk.content}"
+            
+            # Construct the full payload (Provider responsibility now)
+            payload = ContextualChunkPayload(
+                content=chunk.content,
+                content_raw=chunk.content_raw,
+                context=ctx_str,
+                children=[chunk],
+                annotations=chunk.annotations.copy()
+            )
+            results.append(payload)
+        return results
 
 class MockSplitter(BaseStrategy):
     """Splits by pipe '|' for deterministic testing."""
     def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
         segments = [s.strip() for s in data.split('|') if s.strip()]
+        # Annotators applied to CONTENT during splitting
         return [self._apply_annotators_to_payload(s, context) for s in segments]
 
 class MockMismatchProvider(ContextualProviderProtocol):
-    """Simulates a broken provider returning fewer contexts than chunks."""
-    def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
-        return ["Only one context"] # Returns only 1 item regardless of input size
+    """
+    Simulates a broken/filtering provider returning fewer contexts than chunks.
+    """
+    def assign_context(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ContextualChunkPayload]:
+        # Returns only 1 item regardless of input size
+        if not chunks:
+            return []
+        
+        first = chunks[0]
+        return [
+            ContextualChunkPayload(
+                content=first.content, 
+                context="Only one context",
+                children=[first]
+            )
+        ]
 
 # --- Tests ---
 
@@ -59,15 +87,17 @@ def test_contextual_chunking_structure():
     # Item 0
     assert results[0].content == "Block A"
     assert results[0].context == "Context for Block A"
+    assert len(results[0].children) == 1
     
     # Item 1
     assert results[1].content == "Block B"
     assert results[1].context == "Context for Block B"
 
-def test_contextual_chunking_annotations_on_content():
+def test_contextual_chunking_annotations_lifecycle():
     """
-    Verifies that annotators are applied to the 'content' (the text fragment),
-    not the generated context string.
+    Verifies the full annotation lifecycle in the new architecture:
+    1. Splitter annotates the 'content' (Original Text).
+    2. Strategy annotates the 'context' (Generated Text).
     """
     data = "Fragment"
     
@@ -82,32 +112,34 @@ def test_contextual_chunking_annotations_on_content():
     
     results = strategy.execute(data, ctx)
     
-    assert len(results) == 1
     payload = results[0]
     
-    # Verify annotation is present
-    assert "spy" in payload.annotations
+    # 1. Verify Annotator ran twice (Once for Content, Once for Context)
+    assert len(spy.call_history) == 2
+    assert "Fragment" in spy.call_history            # Phase 1: Splitter
+    assert "Context for Fragment" in spy.call_history # Phase 2: Strategy
     
-    # Verify annotator saw the content, not the context
-    assert spy.last_content == "Fragment"
-    assert spy.last_content != "Context for Fragment"
+    # 2. Verify Annotations are present in the final payload
+    # Note: Depending on implementation, they might merge or be separate. 
+    # Usually, the payload carries the annotations from the splitter + new ones.
+    assert "spy" in payload.annotations
 
 def test_contextual_chunking_batch_delegation():
     """
-    Verifies that the strategy delegates the full list of extracted texts
-    to the provider in a single call (or aligned calls), passing the
-    provider_kwargs correctly.
+    Verifies that the strategy delegates the full list of extracted payloads
+    to the provider in a single call, passing provider_kwargs correctly.
     """
-    # We define a specialized mock to capture arguments
+    # Specialized mock to capture arguments
     class SpyProvider(ContextualProviderProtocol):
         def __init__(self):
             self.received_chunks = []
             self.received_kwargs = {}
             
-        def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
+        def assign_context(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ContextualChunkPayload]:
             self.received_chunks = chunks
             self.received_kwargs = kwargs
-            return [""] * len(chunks)
+            # Return empty list to satisfy type hint, content irrelevant for this test
+            return []
 
     data = "A | B | C"
     spy_provider = SpyProvider()
@@ -120,17 +152,19 @@ def test_contextual_chunking_batch_delegation():
     
     strategy.execute(data, ExecutionContext())
     
-    # Verify the provider received the exact list of contents
-    assert spy_provider.received_chunks == ["A", "B", "C"]
+    # Verify the provider received the exact list of ChunkPayload objects
+    assert len(spy_provider.received_chunks) == 3
+    assert spy_provider.received_chunks[0].content == "A"
+    assert spy_provider.received_chunks[2].content == "C"
     
     # Verify kwargs were passed through
     assert spy_provider.received_kwargs.get("model") == "gpt-4-turbo"
 
-def test_contextual_chunking_alignment_safety():
+def test_contextual_chunking_alignment_delegation():
     """
-    Verifies that if the provider returns fewer contexts than chunks,
-    the strategy handles alignment safely (e.g., by padding/truncating)
-    instead of crashing or misaligning.
+    Verifies that the strategy respects the Provider's output structure.
+    If the provider filters or fails to align (returns fewer items), 
+    the strategy simply returns what was given (Architecture decision: Smart Provider).
     """
     data = "A | B | C"
     
@@ -142,15 +176,10 @@ def test_contextual_chunking_alignment_safety():
     
     results = strategy.execute(data, ExecutionContext())
     
-    assert len(results) == 3
+    # The Strategy no longer attempts to force padding. 
+    # It trusts the Provider to return the correct list of payloads.
+    assert len(results) == 1
     
-    # First chunk got the context
+    # Verify the one surviving payload
     assert results[0].content == "A"
     assert results[0].context == "Only one context"
-    
-    # Subsequent chunks should handle missing context gracefully (empty string or similar)
-    # Based on the strategy implementation which pads with ""
-    assert results[1].content == "B"
-    assert results[1].context == ""
-    assert results[2].content == "C"
-    assert results[2].context == ""

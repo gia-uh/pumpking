@@ -1,5 +1,5 @@
 import re
-from typing import List
+from typing import List, Any, Union
 
 from pumpking.models import ChunkPayload
 from pumpking.utils import clean_text
@@ -10,44 +10,37 @@ from pumpking.strategies.base import BaseStrategy
 class RegexChunking(BaseStrategy):
     """
     Splits the input text based on a provided regular expression pattern.
-
-    This strategy functions as a fundamental text segmentation unit. It processes
-    a continuous string of text and divides it into smaller segments determined
-    by the specified regex pattern.
-
-    Crucially, this strategy performs a cleaning pass on each segment before
-    finalizing the output. It utilizes the system's text cleaning utilities
-    to normalize whitespace while preserving the structural integrity dictated
-    by the split pattern.
-
-    After segmentation and cleaning, the strategy acts as an orchestration
-    point for metadata enrichment. It invokes the base strategy's helper methods
-    to apply any annotators currently present in the execution context to each
-    individual text chunk. This ensures that the resulting payloads are both
-    clean and semantically enriched if the pipeline configuration requires it.
-
-    Attributes:
-        pattern (str): The regular expression pattern used to identify split points.
+    Supports optional whitespace collapsing.
     """
 
-    SUPPORTED_INPUTS = [str]
-    PRODUCED_OUTPUT = List[ChunkPayload]
+    SUPPORTED_INPUTS: List[Any] = [str, ChunkPayload]
+    PRODUCED_OUTPUT: Any = List[ChunkPayload]
 
-    def __init__(self, pattern: str) -> None:
+    def __init__(self, pattern: str, collapse_whitespace: bool = True) -> None:
         self.pattern = pattern
+        self.collapse_whitespace = collapse_whitespace
 
-    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+    def execute(
+        self, data: Union[str, ChunkPayload], context: ExecutionContext
+    ) -> List[ChunkPayload]:
         if not data:
             return []
 
-        raw_chunks = re.split(self.pattern, data)
+        text_content = data.content if isinstance(data, ChunkPayload) else str(data)
+
+        if not text_content:
+            return []
+
+        raw_chunks = re.split(self.pattern, text_content)
         payloads = []
 
         for raw_chunk in raw_chunks:
             if not raw_chunk:
                 continue
 
-            cleaned_content = clean_text(raw_chunk, collapse_whitespace=False).strip()
+            cleaned_content = clean_text(
+                raw_chunk, collapse_whitespace=self.collapse_whitespace
+            ).strip()
 
             if cleaned_content:
                 payload = self._apply_annotators_to_payload(
@@ -61,13 +54,10 @@ class RegexChunking(BaseStrategy):
 class FixedSizeChunking(BaseStrategy):
     """
     Splits text into fixed-size segments with optional overlap.
-
-    This strategy operates on the raw text to ensure exact character counts,
-    cleaning each chunk individually afterwards.
     """
 
-    SUPPORTED_INPUTS = [str]
-    PRODUCED_OUTPUT = List[ChunkPayload]
+    SUPPORTED_INPUTS: List[Any] = [str, ChunkPayload]
+    PRODUCED_OUTPUT: Any = List[ChunkPayload]
 
     def __init__(self, chunk_size: int, overlap: int = 0) -> None:
         if chunk_size <= 0:
@@ -80,18 +70,25 @@ class FixedSizeChunking(BaseStrategy):
         self.chunk_size = chunk_size
         self.overlap = overlap
 
-    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+    def execute(
+        self, data: Union[str, ChunkPayload], context: ExecutionContext
+    ) -> List[ChunkPayload]:
         if not data:
+            return []
+
+        text_content = data.content if isinstance(data, ChunkPayload) else str(data)
+
+        if not text_content:
             return []
 
         chunks = []
         start = 0
-        text_len = len(data)
+        text_len = len(text_content)
 
         while start < text_len:
             end = start + self.chunk_size
 
-            raw_chunk = data[start:end]
+            raw_chunk = text_content[start:end]
             cleaned_chunk = clean_text(raw_chunk)
 
             if cleaned_chunk:
@@ -108,20 +105,26 @@ class FixedSizeChunking(BaseStrategy):
 class ParagraphChunking(RegexChunking):
     """
     Specialized RegexChunking that splits text by double newlines.
-    Useful for separating paragraphs, headers from body text, etc.
+
+    IMPORTANT: We disable aggressive whitespace collapsing here to preserve
+    single newlines (e.g., lists, poems) within the paragraph block.
     """
 
     def __init__(self) -> None:
-        super().__init__(pattern=r"\n\n+")
+        super().__init__(pattern=r"\n\n+", collapse_whitespace=False)
 
 
 class SentenceChunking(RegexChunking):
     """
-    Splits text into sentences based on punctuation boundaries using a lookbehind pattern.
+    Splits text into sentences based on punctuation boundaries.
+    Sentences benefit from collapsed whitespace for cleaner NLP processing.
     """
 
     def __init__(self) -> None:
-        super().__init__(pattern=r"(?<=[.!?])\s+")
+        super().__init__(
+            pattern=r"(?<=[.!?])\s+",
+            collapse_whitespace=True
+        )
 
 
 class SlidingWindowChunking(BaseStrategy):
@@ -129,8 +132,8 @@ class SlidingWindowChunking(BaseStrategy):
     Splits text into fixed-size word windows with overlap.
     """
 
-    SUPPORTED_INPUTS = [str]
-    PRODUCED_OUTPUT = List[ChunkPayload]
+    SUPPORTED_INPUTS: List[Any] = [str, ChunkPayload]
+    PRODUCED_OUTPUT: Any = List[ChunkPayload]
 
     def __init__(self, window_size: int, overlap: int) -> None:
         if window_size <= 0:
@@ -143,11 +146,18 @@ class SlidingWindowChunking(BaseStrategy):
         self.window_size = window_size
         self.overlap = overlap
 
-    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+    def execute(
+        self, data: Union[str, ChunkPayload], context: ExecutionContext
+    ) -> List[ChunkPayload]:
         if not data:
             return []
 
-        words = data.split()
+        text_content = data.content if isinstance(data, ChunkPayload) else str(data)
+
+        if not text_content:
+            return []
+
+        words = text_content.split()
         if not words:
             return []
 
@@ -175,15 +185,11 @@ class SlidingWindowChunking(BaseStrategy):
 class AdaptiveChunking(RegexChunking):
     """
     Groups sentences into chunks within a character limit range.
-
-    This strategy leverages regex splitting to identify sentence boundaries
-    and then aggregates them into larger chunks. It prevents running annotators
-    on individual sentences by using an empty execution context for the
-    initial split, applying them only to the final aggregated chunks.
+    Preserves lineage by linking original sentence payloads as children.
     """
 
     def __init__(self, min_chunk_size: int, max_chunk_size: int) -> None:
-        super().__init__(pattern=r"(?<=[.!?])\s+")
+        super().__init__(pattern=r"(?<=[.!?])\s+", collapse_whitespace=True)
         if min_chunk_size <= 0:
             raise ValueError("min_chunk_size must be positive")
         if max_chunk_size < min_chunk_size:
@@ -194,16 +200,21 @@ class AdaptiveChunking(RegexChunking):
         self.min_chunk_size = min_chunk_size
         self.max_chunk_size = max_chunk_size
 
-    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+    def execute(
+        self, data: Union[str, ChunkPayload], context: ExecutionContext
+    ) -> List[ChunkPayload]:
         empty_context = ExecutionContext()
         sentences = super().execute(data, empty_context)
 
         chunks = []
-        current_buffer = []
+        current_buffer: List[ChunkPayload] = []
         current_len = 0
 
         for sentence_payload in sentences:
             content = sentence_payload.content
+            if not content:
+                continue
+
             add_len = len(content)
             sep_len = 1 if current_buffer else 0
 
@@ -211,10 +222,10 @@ class AdaptiveChunking(RegexChunking):
 
             if projected_len > self.max_chunk_size and current_buffer:
                 self._emit_buffer(chunks, current_buffer, context)
-                current_buffer = [content]
+                current_buffer = [sentence_payload]
                 current_len = add_len
             else:
-                current_buffer.append(content)
+                current_buffer.append(sentence_payload)
                 current_len = projected_len
 
         if current_buffer:
@@ -223,13 +234,21 @@ class AdaptiveChunking(RegexChunking):
         return chunks
 
     def _emit_buffer(
-        self, chunks: List[ChunkPayload], buffer: List[str], context: ExecutionContext
+        self,
+        chunks: List[ChunkPayload],
+        buffer: List[ChunkPayload],
+        context: ExecutionContext,
     ) -> None:
-        raw_text = " ".join(buffer)
+        """
+        Helper method to construct a combined ChunkPayload from buffered sentences.
+        Sets the 'children' field to preserve the graph lineage.
+        """
+        raw_text = " ".join([p.content for p in buffer])
         cleaned_content = clean_text(raw_text)
 
         if cleaned_content:
             payload = self._apply_annotators_to_payload(
                 content=cleaned_content, context=context, content_raw=raw_text
             )
+            payload.children = buffer
             chunks.append(payload)

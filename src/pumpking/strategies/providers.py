@@ -5,7 +5,13 @@ from typing import List, Optional, Dict, Set, Tuple, Any
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from pumpking.models import ChunkPayload, ZettelChunkPayload, EntityChunkPayload
+from pumpking.models import (
+    ChunkPayload,
+    ZettelChunkPayload,
+    EntityChunkPayload,
+    TopicChunkPayload,
+    ContextualChunkPayload
+)
 from pumpking.protocols import (
     NERProviderProtocol,
     SummaryProviderProtocol,
@@ -33,44 +39,19 @@ class LLMEntityResponse(BaseModel):
     """
 
     entities: List[LLMEntityResult]
-
-
 class LLMTopicAssignment(BaseModel):
     """
     Represents the assignment of semantic topics to a specific text block.
-
-    This model enforces a content-based alignment strategy ("Anchoring") rather than
-    relying on fragile numeric indexing. By requiring the LLM to quote the start
-    of the text block, we can deterministically map the classification back to the
-    original source chunk using fuzzy string matching, independent of the LLM's
-    ability to count or maintain list order.
+    Uses anchoring to map back to source chunks deterministically.
     """
-
-    anchor: str = Field(
-        ...,
-        description="The first 10 to 15 words of the text block exactly as they appear.",
-    )
-    topics: List[str] = Field(
-        ...,
-        description="The list of applicable topics derived from the provided taxonomy.",
-    )
-
+    anchor: str = Field(..., description="The first 10 to 15 words of the text block exactly as they appear.")
+    topics: List[str] = Field(..., description="The list of applicable topics derived from the provided taxonomy.")
 
 class LLMTopicResponse(BaseModel):
-    """
-    Structured response wrapper for a batch classification request.
-    """
-
     assignments: List[LLMTopicAssignment]
 
-
 class LLMTaxonomyResponse(BaseModel):
-    """
-    Structured response for the taxonomy discovery phase.
-    """
-
     topics: List[str]
-
 
 class LLMContextAssignment(BaseModel):
     """
@@ -369,240 +350,223 @@ class LLMProvider(
 
         return final_payloads
 
-    def summarize(self, text: str, **kwargs: Any) -> str:
+    def summarize(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ChunkPayload]:
         """
-        Generates a balanced, information-rich summary of the provided text.
-
-        This implementation is opinionated: it aims for the 'sweet spot' between
-        high-level abstraction (gist) and factual preservation (extraction).
-        It is designed to produce a dense representation suitable for both
-        human reading and semantic embedding, ensuring that key entities
-        supporting the main narrative are retained.
-
-        Constraints enforced via prompt:
-        1. Strict adherence to the input language.
-        2. Direct output without meta-commentary/fillers.
-        3. Preservation of critical proper nouns and dates within the narrative flow.
-
-        Args:
-            text: The raw text to summarize.
-            **kwargs: Configuration arguments (e.g., 'model').
-
-        Returns:
-            The summary string. If generation fails for any reason, returns
-            the original text to ensure data continuity.
+        Generates summaries for a list of chunks, employing batching to optimize 
+        LLM calls. Returns new ChunkPayloads wrapping the summaries.
         """
-        if not text or not text.strip():
-            return ""
+        if not chunks:
+            return []
 
-        model = kwargs.get("model", self.default_model)
-        # Temperature 0.2 provides stability without being overly repetitive
-        temperature = kwargs.get("temperature", 0.2)
+        valid_indices = [i for i, c in enumerate(chunks) if c.content]
+        valid_texts = [chunks[i].content for i in valid_indices]
 
-        system_prompt = (
-            "You are an expert content summarizer. Produce a comprehensive yet concise "
-            "summary of the provided text.\n\n"
-            "EXECUTION GUIDELINES:\n"
-            "1. BALANCE: Capture the core narrative/arguments while retaining key supporting "
-            "details (specific names, dates, organizations). Do not over-generalize, "
-            "but do not simply list facts.\n"
-            "2. LANGUAGE: Output strictly in the SAME LANGUAGE as the input text.\n"
-            "3. NO FILLERS: Start directly with the summary content. Do not use phrases "
-            "like 'The text discusses' or 'In summary'.\n"
-            "4. CLARITY: Remove redundancy and fluff."
-        )
+        if not valid_texts:
+            return []
 
-        try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
-                temperature=temperature,
-            )
+        summaries_map: Dict[int, str] = {}
+        batch_size = kwargs.get("batch_size", 5) 
 
-            summary = response.choices[0].message.content
-            return summary.strip() if summary else text
+        for i in range(0, len(valid_texts), batch_size):
+            batch_texts = valid_texts[i : i + batch_size]
+            batch_indices = valid_indices[i : i + batch_size]
+            
+            batch_summaries = self._summarize_batch(batch_texts, **kwargs)
+            
+            for local_idx, summary_text in enumerate(batch_summaries):
+                if local_idx < len(batch_indices):
+                    global_idx = batch_indices[local_idx]
+                    summaries_map[global_idx] = summary_text
 
-        except Exception:
-            # Silent fallback: Return original text to prevent pipeline breakage.
-            return text
-
-    def assign_topics(self, chunks: List[str], **kwargs: Any) -> List[List[str]]:
-        """
-        Orchestrates the semantic classification of a list of text chunks.
-
-        This method implements a robust, two-phase architectural pattern to handle
-        topic assignment at scale:
-
-        1. Taxonomy Discovery (Optional): If a pre-defined taxonomy is not provided
-           in the keyword arguments, the method triggers a Map-Reduce process.
-           It scans the entire document content in batches to extract raw themes
-           and then consolidates them into a unified, deduplicated global taxonomy.
-           This ensures that the topics are contextually relevant to the specific document.
-
-        2. Batch Classification with Anchor Matching: It iterates through the input
-           chunks in batches to optimize context window usage and API costs.
-           Unlike traditional index-based approaches, it employs an "Anchor Matching"
-           strategy. The LLM is required to quote the beginning of the text it is
-           classifying. These quotes are then fuzzy-matched against the original
-           chunks to guarantee 1-to-1 alignment, making the system resilient to
-           LLM hallucinations or off-by-one indexing errors.
-
-        Args:
-            chunks: A list of text strings (paragraphs or sections) to be classified.
-            **kwargs: Configuration parameters including:
-                      - 'taxonomy' (List[str], optional): A pre-computed list of topics.
-                      - 'taxonomy_batch_size' (int): Batch size for discovery (default: 10).
-                      - 'batch_size' (int): Batch size for classification (default: 10).
-                      - 'model' (str): The specific LLM model to use.
-
-        Returns:
-            A list of lists of strings, strictly aligned with the input 'chunks'.
-            The element at index 'i' in the return list corresponds to the topics
-            assigned to 'chunks[i]'.
-        """
-        taxonomy = kwargs.get("taxonomy")
-        if not taxonomy:
-            taxonomy = self._discover_taxonomy(chunks, **kwargs)
-
-        return self._classify_batches(chunks, taxonomy, **kwargs)
-
-    def _discover_taxonomy(self, chunks: List[str], **kwargs: Any) -> List[str]:
-        """
-        Executes a Map-Reduce algorithm to generate a global taxonomy from the document.
-
-        This method addresses the "Context Window Explosion" problem common in
-        large document processing. Instead of feeding the entire text to the LLM
-        at once, it processes the document iteratively.
-
-        Phase 1 (Map): The method iterates through the document in chunks determined
-        by 'taxonomy_batch_size'. For each batch, it requests a raw list of key
-        topics. The prompt explicitly instructs the LLM to preserve the original
-        language of the document.
-
-        Phase 2 (Reduce): All raw topics collected from the batches are aggregated.
-        A final LLM call is made to consolidate, deduplicate, normalize, and
-        refine this aggregate list into a coherent taxonomy structure, again strictly
-        enforcing the original language.
-
-        Args:
-            chunks: The full list of document text segments.
-            **kwargs: Configuration options, specifically 'taxonomy_batch_size'.
-
-        Returns:
-            A sanitized list of unique string topics representing the global themes
-            of the document.
-        """
-        batch_size = kwargs.get("taxonomy_batch_size", 10)
-        all_raw_topics = []
-
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
-            batch_text = "\n---\n".join(batch)
-
-            prompt = (
-                "Analyze the following text fragments. "
-                "Extract a list of the key distinct topics discussed. "
-                "CRITICAL INSTRUCTION: Output the topics in the SAME LANGUAGE "
-                "as the input text. Do not translate them to English. "
-                "Return ONLY the list of topics."
-            )
-
-            response = self.client.chat.completions.create(
-                model=kwargs.get("model", self.default_model),
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": batch_text},
-                ],
-                temperature=0.3,
-            )
-            content = response.choices[0].message.content
-            if content:
-                raw_lines = [
-                    line.strip("- *") for line in content.split("\n") if line.strip()
-                ]
-                all_raw_topics.extend(raw_lines)
-
-        unification_prompt = (
-            "Consolidate the following list of raw topics into a clean, "
-            "deduplicated taxonomy. Merge synonyms and keep it concise. "
-            "CRITICAL: Maintain the taxonomy in the ORIGINAL LANGUAGE of the source topics. "
-            "Do not translate."
-        )
-
-        completion = self.client.beta.chat.completions.parse(
-            model=kwargs.get("model", self.default_model),
-            messages=[
-                {"role": "system", "content": unification_prompt},
-                {"role": "user", "content": "\n".join(all_raw_topics[:2000])},
-            ],
-            response_format=LLMTaxonomyResponse,
-        )
-
-        return completion.choices[0].message.parsed.topics
-
-    def _classify_batches(
-        self, chunks: List[str], taxonomy: List[str], **kwargs: Any
-    ) -> List[List[str]]:
-        """
-        Performs topic assignment on batches of text using Anchor-based alignment.
-
-        This method processes the input list in segments defined by 'batch_size'.
-        For each batch, it constructs a prompt containing multiple visually separated
-        text blocks.
-
-        Crucially, it mandates that the LLM returns an 'anchor' string for each
-        classification. This anchor is a quote of the first few words of the block.
-        The prompt strictly forbids translation of this anchor to ensure that
-        fuzzy matching against the original text succeeds.
-
-        Args:
-            chunks: The list of text segments to classify.
-            taxonomy: The global list of valid topics to assign.
-            **kwargs: Configuration options like 'batch_size' and 'model'.
-
-        Returns:
-            A list of topic lists aligned with the input chunks.
-        """
-        batch_size = kwargs.get("batch_size", 10)
-        results = [[] for _ in chunks]
-
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
-
-            batch_text = "\n\n--- BLOCK ---\n".join(batch)
-
-            prompt = (
-                f"Taxonomy: {taxonomy}\n\n"
-                "Task: Assign applicable topics to each text block.\n"
-                "Constraint 1: For verification, you must return the first 10 words "
-                "of the block in the 'anchor' field EXACTLY as they appear in the text. "
-                "DO NOT TRANSLATE the anchor.\n"
-                "Constraint 2: Output topics in the SAME LANGUAGE as the input text."
-            )
-
-            try:
-                completion = self.client.beta.chat.completions.parse(
-                    model=kwargs.get("model", self.default_model),
-                    messages=[
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": batch_text},
-                    ],
-                    response_format=LLMTopicResponse,
-                    temperature=0.0,
+        results = []
+        for i, original_chunk in enumerate(chunks):
+            if i in summaries_map and summaries_map[i]:
+                summary_text = summaries_map[i]
+                
+                payload = ChunkPayload(
+                    content=summary_text,
+                    content_raw=summary_text, 
+                    children=[original_chunk], 
                 )
-
-                if completion.choices[0].message.parsed:
-                    assignments = completion.choices[0].message.parsed.assignments
-                    self._map_assignments_to_results(assignments, batch, results, i)
-
-            except Exception:
-                continue
+                results.append(payload)
+            else:
+                pass
 
         return results
 
+    def _summarize_batch(self, batch_texts: List[str], **kwargs) -> List[str]:
+        """
+        Internal helper to summarize multiple texts in one prompt.
+        """
+        results = [""] * len(batch_texts)
+        
+        formatted_targets = "\n\n".join([f"TEXT {i+1}:\n{t}" for i, t in enumerate(batch_texts)])
+        
+        system_prompt = (
+            "You are an expert summarizer. Summarize each of the following texts independently.\n"
+            "Return the output as a JSON list of strings, strictly preserving the order."
+        )
+        
+        class BatchSummaryResponse(BaseModel):
+            summaries: List[str]
+
+        try:
+            completion = self.client.beta.chat.completions.parse(
+                model=kwargs.get("model", self.default_model),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": formatted_targets}
+                ],
+                response_format=BatchSummaryResponse,
+                temperature=0.2,
+            )
+            
+            if completion.choices[0].message.parsed:
+                returned_sums = completion.choices[0].message.parsed.summaries
+                for i in range(min(len(returned_sums), len(results))):
+                    results[i] = returned_sums[i]
+                    
+        except Exception as e:
+            self.logger.error(f"Batch summary failed: {e}")
+            pass
+            
+        return results
+    
+    def assign_topics(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[TopicChunkPayload]:
+        """
+        Extracts topics from the provided chunks and groups them semantically.
+        Implements the pivot logic: transforms a list of chunks with topics into
+        a list of topics containing chunks.
+        """
+        if not chunks:
+            return []
+
+        valid_chunks_with_indices = [(i, c) for i, c in enumerate(chunks) if c.content]
+        valid_texts = [c.content for _, c in valid_chunks_with_indices]
+        
+        if not valid_texts:
+            return []
+
+        taxonomy = kwargs.get("taxonomy")
+        if not taxonomy:
+            taxonomy = self._discover_taxonomy(valid_texts, **kwargs)
+
+        chunk_topic_map: Dict[int, List[str]] = {}
+        batch_size = kwargs.get("batch_size", 10)
+        
+        for i in range(0, len(valid_texts), batch_size):
+            batch_texts = valid_texts[i : i + batch_size]
+            batch_start_index = i 
+            
+            assignments = self._classify_batch_topics(batch_texts, taxonomy, **kwargs)
+            
+            for local_idx, topics in assignments.items():
+                global_idx = batch_start_index + local_idx
+                chunk_topic_map[global_idx] = topics
+
+        topic_grouping: Dict[str, List[ChunkPayload]] = {}
+
+        for global_idx, topics in chunk_topic_map.items():
+            original_chunk = valid_chunks_with_indices[global_idx][1]
+            
+            for topic in topics:
+                if topic not in topic_grouping:
+                    topic_grouping[topic] = []
+                
+                if original_chunk not in topic_grouping[topic]:
+                    topic_grouping[topic].append(original_chunk)
+
+        final_payloads = []
+        for topic_label, grouped_chunks in topic_grouping.items():
+            payload = TopicChunkPayload(
+                content=topic_label,
+                content_raw="", 
+                topic=topic_label,
+                children=grouped_chunks
+            )
+            final_payloads.append(payload)
+
+        return final_payloads
+
+    def _discover_taxonomy(self, texts: List[str], **kwargs: Any) -> List[str]:
+        """Generates a taxonomy from the text content."""
+        batch_size = kwargs.get("taxonomy_batch_size", 10)
+        all_raw_topics = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            prompt = "Extract distinct key topics from the text. Output as list."
+            try:
+                response = self.client.chat.completions.create(
+                    model=kwargs.get("model", self.default_model),
+                    messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "\n".join(batch)}],
+                    temperature=0.3
+                )
+                content = response.choices[0].message.content
+                if content:
+                    all_raw_topics.extend([line.strip("- *") for line in content.split('\n') if line.strip()])
+            except Exception:
+                continue
+        
+        unification_prompt = "Consolidate into a clean, deduplicated taxonomy."
+        try:
+            completion = self.client.beta.chat.completions.parse(
+                model=kwargs.get("model", self.default_model),
+                messages=[{"role": "system", "content": unification_prompt}, {"role": "user", "content": "\n".join(all_raw_topics[:2000])}],
+                response_format=LLMTaxonomyResponse,
+            )
+            return completion.choices[0].message.parsed.topics
+        except Exception:
+            return []
+
+    def _classify_batch_topics(self, batch_texts: List[str], taxonomy: List[str], **kwargs: Any) -> Dict[int, List[str]]:
+        """
+        Classifies a batch of texts against the taxonomy. 
+        Returns a map of local_batch_index -> topics.
+        """
+        results = {}
+        formatted_batch = "\n\n--- BLOCK ---\n".join(batch_texts)
+        prompt = f"Taxonomy: {taxonomy}\nAssign topics. Return 'anchor' (first 10 words) for matching."
+        
+        try:
+            completion = self.client.beta.chat.completions.parse(
+                model=kwargs.get("model", self.default_model),
+                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": formatted_batch}],
+                response_format=LLMTopicResponse,
+                temperature=0.0,
+            )
+            
+            if completion.choices[0].message.parsed:
+                assignments = completion.choices[0].message.parsed.assignments
+                
+                available_indices = set(range(len(batch_texts)))
+                
+                for asm in assignments:
+                    target_anchor = asm.anchor.strip().lower()
+                    best_idx = -1
+                    best_score = 0.0
+                    
+                    for idx in available_indices:
+                        chunk_start = batch_texts[idx][:len(asm.anchor) + 20].strip().lower()
+                        
+                        if chunk_start.startswith(target_anchor):
+                            best_score = 1.0
+                            best_idx = idx
+                            break
+                        
+                        matcher = difflib.SequenceMatcher(None, target_anchor, chunk_start)
+                        score = matcher.quick_ratio()
+                        if score > best_score:
+                            best_score = score
+                            best_idx = idx
+                            
+                    if best_idx != -1 and best_score > 0.8:
+                        results[best_idx] = asm.topics
+
+        except Exception as e:
+            self.logger.error(f"Error classifying topic batch: {e}")
+            
+        return results
+    
     def _map_assignments_to_results(
         self,
         assignments: List[LLMTopicAssignment],
@@ -660,90 +624,128 @@ class LLMProvider(
                 global_index = global_offset + best_idx
                 global_results[global_index] = asm.topics
 
-    def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
+    def assign_context(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ContextualChunkPayload]:
         """
-        Assigns situational context to fragments using a narrative-aware sliding window
-        and robust token-overlap matching to ensure alignment.
+        Generates situational context for each chunk and wraps it in a ContextualChunkPayload.
+        Uses _generate_context_for_batch to handle the LLM interaction.
         """
+        if not chunks:
+            return []
+            
+        valid_indices = [i for i, c in enumerate(chunks) if c.content]
+        valid_texts = [chunks[i].content for i in valid_indices]
+        
+        if not valid_texts:
+            return []
+
+        contexts_map: Dict[int, str] = {}
         batch_size = kwargs.get("batch_size", 5)
-        overlap_size = kwargs.get("overlap_size", 3)
-        results = [""] * len(chunks)
+        
+        for i in range(0, len(valid_texts), batch_size):
+            batch_texts = valid_texts[i : i + batch_size]
+            batch_indices = valid_indices[i : i + batch_size]
+            
+            batch_contexts = self._generate_context_for_batch(batch_texts, valid_texts, i, **kwargs)
+            
+            for local_idx, ctx_str in enumerate(batch_contexts):
+                if local_idx < len(batch_indices) and ctx_str:
+                    global_idx = batch_indices[local_idx]
+                    contexts_map[global_idx] = ctx_str
 
-        def get_tokens(text: str) -> set:
-            return set(
-                "".join(filter(str.isalnum, word)).lower() for word in text.split()
+        results = []
+        for i, original_chunk in enumerate(chunks):
+            ctx_str = contexts_map.get(i, "")
+            
+            payload = ContextualChunkPayload(
+                content=original_chunk.content,
+                content_raw=original_chunk.content_raw,
+                context=ctx_str,
+                children=[original_chunk], 
+                annotations=original_chunk.annotations.copy()
             )
-
-        for i in range(0, len(chunks), batch_size):
-            current_batch = chunks[i : i + batch_size]
-
-            start_overlap = max(0, i - overlap_size)
-            prev_chunks = chunks[start_overlap:i]
-            background_text = (
-                "\n---\n".join(prev_chunks) if prev_chunks else "start of document."
-            )
-
-            targets_text = "\n\n".join(
-                [f"TARGET FRAGMENT:\n{t}" for t in current_batch]
-            )
-
-            system_prompt = (
-                "You are an expert Knowledge Graph Engineer specializing in Contextual Retrieval.\n\n"
-                "GOAL: Provide situational context for isolated fragments.\n"
-                "1. IDENTITY: Resolve pronouns using names from the background.\n"
-                "2. LOCATION: Anchor the fragment to its document section or parent topic.\n"
-                "3. CAUSALITY: Explain the event in the background that leads to this fragment.\n\n"
-                "CONSTRAINTS:\n"
-                "- DO NOT summarize the target fragment. Context must be purely ADDITIVE.\n"
-                "- Use the BACKGROUND as the source of truth.\n"
-                "- Return a JSON mapping for each fragment using its starting words as 'quote'."
-            )
-
-            user_prompt = (
-                f"<BACKGROUND (READ ONLY)>\n{background_text}\n</BACKGROUND>\n\n"
-                f"<TARGETS (PROCESS THESE)>\n{targets_text}\n</TARGETS>"
-            )
-
-            try:
-                completion = self.client.beta.chat.completions.parse(
-                    model=kwargs.get("model", self.default_model),
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    response_format=LLMContextResponse,
-                    temperature=0.0,
-                )
-
-                if completion.choices[0].message.parsed:
-                    # Pre-calculate token sets for the current batch
-                    batch_token_sets = [
-                        (global_idx, get_tokens(chunk[:50]))
-                        for global_idx, chunk in enumerate(current_batch, start=i)
-                    ]
-
-                    for assignment in completion.choices[0].message.parsed.assignments:
-                        assignment_tokens = get_tokens(assignment.quote)
-                        if not assignment_tokens:
-                            continue
-
-                        best_match_idx = -1
-                        max_overlap = 0
-
-                        for global_idx, chunk_tokens in batch_token_sets:
-                            overlap = len(assignment_tokens.intersection(chunk_tokens))
-                            if overlap > max_overlap:
-                                max_overlap = overlap
-                                best_match_idx = global_idx
-
-                        if best_match_idx != -1 and max_overlap > 0:
-                            results[best_match_idx] = assignment.context
-
-            except Exception:
-                continue
-
+            results.append(payload)
+                
         return results
 
+    def _generate_context_for_batch(
+        self, 
+        batch_texts: List[str], 
+        all_texts: List[str], 
+        offset: int, 
+        **kwargs
+    ) -> List[str]:
+        """
+        New helper method: Encapsulates the logic of calling the LLM and matching
+        the returned quotes to the original text using your robust token overlap strategy.
+        """
+        overlap_size = kwargs.get("overlap_size", 3)
+        start_overlap = max(0, offset - overlap_size)
+        
+        prev_chunks = all_texts[start_overlap : offset]
+        background_text = "\n---\n".join(prev_chunks) if prev_chunks else "start of document."
+        targets_text = "\n\n".join([f"TARGET FRAGMENT:\n{t}" for t in batch_texts])
+
+        system_prompt = (
+            "You are an expert Knowledge Graph Engineer specializing in Contextual Retrieval.\n\n"
+            "GOAL: Provide situational context for isolated fragments.\n"
+            "1. IDENTITY: Resolve pronouns using names from the background.\n"
+            "2. LOCATION: Anchor the fragment to its document section or parent topic.\n"
+            "3. CAUSALITY: Explain the event in the background that leads to this fragment.\n\n"
+            "CONSTRAINTS:\n"
+            "- DO NOT summarize the target fragment. Context must be purely ADDITIVE.\n"
+            "- Use the BACKGROUND as the source of truth.\n"
+            "- Return a JSON mapping for each fragment using its starting words as 'quote'."
+        )
+
+        user_prompt = (
+            f"<BACKGROUND (READ ONLY)>\n{background_text}\n</BACKGROUND>\n\n"
+            f"<TARGETS (PROCESS THESE)>\n{targets_text}\n</TARGETS>"
+        )
+
+        results = [""] * len(batch_texts)
+
+        try:
+            completion = self.client.beta.chat.completions.parse(
+                model=kwargs.get("model", self.default_model),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                response_format=LLMContextResponse,
+                temperature=0.0,
+            )
+
+            if completion.choices[0].message.parsed:
+                def get_tokens(text: str) -> set:
+                    return set("".join(filter(str.isalnum, word)).lower() for word in text.split())
+
+                batch_token_sets = [
+                    (local_idx, get_tokens(chunk[:50])) 
+                    for local_idx, chunk in enumerate(batch_texts)
+                ]
+
+                for assignment in completion.choices[0].message.parsed.assignments:
+                    assignment_tokens = get_tokens(assignment.quote)
+                    if not assignment_tokens:
+                        continue
+
+                    best_match_idx = -1
+                    max_overlap = 0
+
+                    for local_idx, chunk_tokens in batch_token_sets:
+                        overlap = len(assignment_tokens.intersection(chunk_tokens))
+                        if overlap > max_overlap:
+                            max_overlap = overlap
+                            best_match_idx = local_idx
+                    
+                    if best_match_idx != -1 and max_overlap > 0:
+                        results[best_match_idx] = assignment.context
+
+        except Exception as e:
+            self.logger.error(f"Context generation failed: {e}")
+            
+        return results
+    
     def extract_zettels(
         self, chunks: List[ChunkPayload], batch_size: int = 5, **kwargs: Any
     ) -> List[ZettelChunkPayload]:

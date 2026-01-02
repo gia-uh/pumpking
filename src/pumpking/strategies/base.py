@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 from pumpking.models import ChunkPayload
 from pumpking.protocols import StrategyProtocol, ExecutionContext
 
@@ -18,16 +18,16 @@ class BaseStrategy(StrategyProtocol):
     any configured annotators in the ExecutionContext.
     """
     
-    SUPPORTED_INPUTS: List[Any] = [str, List[str]]
+    SUPPORTED_INPUTS: List[Any] = [str, List[str], ChunkPayload]
     PRODUCED_OUTPUT: Any = List[ChunkPayload]
 
-    def execute(self, data: Any, context: ExecutionContext) -> Any:
+    def execute(self, data: Union[str, ChunkPayload], context: ExecutionContext) -> Any:
         """
         Abstract method that must be implemented by all concrete strategies.
 
-        This method defines the specific processing logic of the strategy (e.g.,
-        splitting text by paragraphs, clustering by entities, or summarizing).
-        It receives raw data and an execution context, and it must return the
+        This method defines the specific processing logic of the strategy.
+        It receives input data (which can be raw text or an existing ChunkPayload
+        from a previous step) and an execution context. It must return the
         transformed data defined in PRODUCED_OUTPUT.
 
         Args:

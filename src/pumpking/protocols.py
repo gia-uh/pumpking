@@ -1,14 +1,18 @@
 from typing import Any, Dict, List, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict
-from pumpking.models import ChunkPayload, ZettelChunkPayload, EntityChunkPayload
-
+from pumpking.models import (
+    ChunkPayload, 
+    EntityChunkPayload, 
+    TopicChunkPayload,
+    ZettelChunkPayload,
+    ContextualChunkPayload
+)
 
 class ExecutionContext(BaseModel):
     """
     Holds configuration and state for the current execution step.
     Defined as a Pydantic model to allow arbitrary types and validation.
     """
-
     model_config = ConfigDict(arbitrary_types_allowed=True)
     annotators: Dict[str, Any] = {}
 
@@ -18,7 +22,6 @@ class StrategyProtocol(Protocol):
     """
     Protocol defining the interface for all processing strategies.
     """
-
     def execute(self, data: Any, context: ExecutionContext) -> Any:
         """
         Executes the strategy logic on the provided data.
@@ -30,15 +33,12 @@ class StrategyProtocol(Protocol):
 @runtime_checkable
 class NERProviderProtocol(Protocol):
     """
-    Protocol for providers capable of performing Named Entity Recognition.
+    Protocol for NER providers.
     """
-
-    def extract_entities(
-        self, chunks: List[ChunkPayload], **kwargs: Any
-    ) -> List[EntityChunkPayload]:
+    def extract_entities(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[EntityChunkPayload]:
         """
-        Analyzes a list of text chunks and returns a list of identified entities.
-        Each EntityChunkPayload must contain the original source chunks in its 'children' field.
+        Analyzes a list of chunk payloads and returns a list of identified entities
+        referencing the original source chunks.
         """
         ...
 
@@ -46,25 +46,25 @@ class NERProviderProtocol(Protocol):
 @runtime_checkable
 class SummaryProviderProtocol(Protocol):
     """
-    Protocol for Summary providers.
+    Protocol for providers capable of text summarization.
     """
-
-    def summarize(self, text: str, **kwargs: Any) -> str:
+    def summarize(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ChunkPayload]:
         """
-        Generates a concise summary of the provided text.
+        Analyzes a list of chunks and returns a list of new ChunkPayloads containing 
+        the summaries. Each summary payload must reference the original source chunk 
+        in its 'children' field.
         """
         ...
-
 
 @runtime_checkable
 class TopicProviderProtocol(Protocol):
     """
     Protocol for providers that assign thematic labels to text blocks.
     """
-
-    def assign_topics(self, chunks: List[str], **kwargs: Any) -> List[List[str]]:
+    def assign_topics(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[TopicChunkPayload]:
         """
-        Assigns a list of topics to each input fragment.
+        Analyzes a list of chunks, identifies topics, and groups the chunks
+        under new TopicChunkPayload objects.
         """
         ...
 
@@ -74,10 +74,10 @@ class ContextualProviderProtocol(Protocol):
     """
     Protocol for providers that generate situational context for fragments.
     """
-
-    def assign_context(self, chunks: List[str], **kwargs: Any) -> List[str]:
+    def assign_context(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ContextualChunkPayload]:
         """
-        Assigns a situational context string to each input fragment.
+        Analyzes a list of chunks and returns a list of ContextualChunkPayloads,
+        where each payload enriches the original chunk with situational context.
         """
         ...
 
@@ -85,34 +85,13 @@ class ContextualProviderProtocol(Protocol):
 @runtime_checkable
 class ZettelProviderProtocol(Protocol):
     """
-    Defines the contract for providers capable of transforming physical text
-    fragments into atomic knowledge units (Zettels). Implementations of this
-    protocol are responsible for semantic analysis, concept synthesis, and
-    the resolution of local graph relationships.
+    Defines the contract for providers capable of transforming physical text 
+    fragments into atomic knowledge units (Zettels).
     """
 
-    def extract_zettels(
-        self, chunks: List[ChunkPayload], **kwargs: Any
-    ) -> List[ZettelChunkPayload]:
+    def extract_zettels(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ZettelChunkPayload]:
         """
-        Analyzes a sequence of input chunks to identify and extract atomic
+        Analyzes a sequence of input chunks to identify and extract atomic 
         concepts.
-
-        The provider must ensure that:
-        1. Each returned Zettel contains a synthesized 'hypothesis'.
-        2. The 'children' field of each Zettel is populated with the relevant
-           ChunkPayload objects from the input that serve as evidence.
-        3. The 'related_zettel_ids' field is populated to reflect semantic
-           relationships identified between the generated Zettels.
-
-        Args:
-            chunks: A list of ChunkPayload objects representing the raw
-                textual evidence (e.g., paragraphs or sentences).
-            **kwargs: Additional configuration parameters for the underlying
-                model or extraction logic.
-
-        Returns:
-            A list of ZettelChunkPayload objects, each representing a distinct
-            concept with its associated metadata and evidence.
         """
         ...
