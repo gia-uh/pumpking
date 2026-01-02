@@ -26,15 +26,6 @@ class PumpkingBaseModel(BaseModel):
             ]
         return data
 
-class NERResult(BaseModel):
-    """
-    Data structure representing the identified entity, its category label, 
-    and the indices of the sentences where it was detected.
-    """
-    entity: str
-    label: str
-    indices: List[int]
-
 class ChunkPayload(PumpkingBaseModel):
     """
     Base data container produced by strategies. It encapsulates the processed text,

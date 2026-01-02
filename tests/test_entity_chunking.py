@@ -1,6 +1,6 @@
 import pytest
-from typing import List, Any, Union
-from pumpking.models import ChunkPayload, EntityChunkPayload, NERResult
+from typing import List, Any
+from pumpking.models import ChunkPayload, EntityChunkPayload
 from pumpking.protocols import ExecutionContext, NERProviderProtocol
 from pumpking.strategies.base import BaseStrategy
 from pumpking.strategies.advanced import EntityBasedChunking
@@ -9,7 +9,7 @@ from pumpking.strategies.advanced import EntityBasedChunking
 
 class MockAnnotator(BaseStrategy):
     """
-    A spy annotator to verify that annotations are computed only once
+    Spy annotator to verify that annotations are computed only once
     and preserved across shared references.
     """
     def __init__(self):
@@ -21,13 +21,14 @@ class MockAnnotator(BaseStrategy):
 
 class MockNERProvider(NERProviderProtocol):
     """
-    Simulates the LLMProvider behavior by returning pre-defined indices.
-    This avoids making real API calls during tests.
+    Simulates the LLMProvider behavior. 
+    Crucial Change: It now returns a list of fully formed EntityChunkPayloads, 
+    matching the updated protocol, instead of intermediate dictionaries.
     """
-    def __init__(self, fixed_results: List[NERResult]):
+    def __init__(self, fixed_results: List[EntityChunkPayload]):
         self.fixed_results = fixed_results
 
-    def extract_entities(self, sentences: List[str], **kwargs: Any) -> List[NERResult]:
+    def extract_entities(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[EntityChunkPayload]:
         return self.fixed_results
 
 class MockSplitter(BaseStrategy):
@@ -48,17 +49,28 @@ class MockSplitter(BaseStrategy):
 
 def test_entity_chunking_groups_correctly():
     """
-    Verifies that the strategy correctly groups sentences under their respective entities
-    based on the indices provided by the NER provider.
+    Verifies that the strategy correctly passes through the payloads 
+    returned by the provider.
     """
+    chunk1 = ChunkPayload(content="Elon Musk runs SpaceX", content_raw="Elon Musk runs SpaceX")
+    chunk2 = ChunkPayload(content="He runs Tesla", content_raw="He runs Tesla")
     
-    mock_results = [
-        NERResult(entity="Elon Musk", label="PER", indices=[0, 1]),
-        NERResult(entity="SpaceX", label="ORG", indices=[0]),
-        NERResult(entity="Tesla", label="ORG", indices=[1]),
+    mock_payloads = [
+        EntityChunkPayload(
+            entity="Elon Musk", 
+            type="PER", 
+            children=[chunk1, chunk2],
+            content="Elon Musk"
+        ),
+        EntityChunkPayload(
+            entity="SpaceX", 
+            type="ORG", 
+            children=[chunk1],
+            content="SpaceX"
+        )
     ]
     
-    provider = MockNERProvider(mock_results)
+    provider = MockNERProvider(mock_payloads)
     splitter = MockSplitter()
     
     strategy = EntityBasedChunking(ner_provider=provider, splitter=splitter)
@@ -68,74 +80,34 @@ def test_entity_chunking_groups_correctly():
     
     results = strategy.execute(text, context)
     
-    assert len(results) == 3 
+    assert len(results) == 2 
     
-    elon_node = next(r for r in results if isinstance(r, EntityChunkPayload) and r.entity == "Elon Musk")
+    elon_node = results[0]
+    assert elon_node.entity == "Elon Musk"
     assert elon_node.type == "PER"
     assert len(elon_node.children) == 2
-    assert "Elon Musk runs SpaceX" in elon_node.children[0].content
-    assert "He runs Tesla" in elon_node.children[1].content
+    assert elon_node.children[0].content == "Elon Musk runs SpaceX"
     
-    spacex_node = next(r for r in results if isinstance(r, EntityChunkPayload) and r.entity == "SpaceX")
+    spacex_node = results[1]
+    assert spacex_node.entity == "SpaceX"
     assert len(spacex_node.children) == 1
-    assert "Elon Musk runs SpaceX" in spacex_node.children[0].content
-
-def test_entity_chunking_optimization_shared_memory():
-    """
-    CRITICAL TEST: Verifies the reference sharing optimization.
-    
-    If Sentence A belongs to Entity X and Entity Y, both EntityChunkPayloads
-    must point to the EXACT SAME ChunkPayload object in memory for Sentence A.
-    This proves we are not duplicating data or re-running annotations.
-    """
-    mock_results = [
-        NERResult(entity="Ent1", label="MISC", indices=[0]),
-        NERResult(entity="Ent2", label="MISC", indices=[0]),
-    ]
-    
-    provider = MockNERProvider(mock_results)
-    splitter = MockSplitter()
-    strategy = EntityBasedChunking(ner_provider=provider, splitter=splitter)
-    context = ExecutionContext()
-    
-    text = "Shared Sentence."
-    results = strategy.execute(text, context)
-    
-    node1 = results[0] 
-    node2 = results[1] 
-    
-    child1 = node1.children[0]
-    child2 = node2.children[0]
-    
-    assert child1 is child2
-    assert child1.content == "Shared Sentence"
 
 def test_entity_chunking_annotators_run_once():
     """
     Verifies that annotators are executed during the splitting phase 
     and NOT re-executed during the grouping phase.
     """
-    mock_results = [
-        NERResult(entity="Ent1", label="MISC", indices=[0]),
-        NERResult(entity="Ent2", label="MISC", indices=[0]),
-    ]
-    
     spy_annotator = MockAnnotator()
     context = ExecutionContext()
     context.annotators = {"spy": spy_annotator}
     
-    provider = MockNERProvider(mock_results)
+    provider = MockNERProvider([])
     splitter = MockSplitter()
     strategy = EntityBasedChunking(ner_provider=provider, splitter=splitter)
     
     text = "Single Sentence."
     
-    results = strategy.execute(text, context)
-    
-    child = results[0].children[0]
-    
-    assert "spy" in child.annotations
-    assert child.annotations["spy"]["spy_checked"] is True
+    strategy.execute(text, context)
     
     assert spy_annotator.call_count == 1
 
@@ -145,7 +117,7 @@ def test_entity_chunking_default_instantiation():
     instead of instances.
     """
     class SimpleMockProvider(NERProviderProtocol):
-        def extract_entities(self, sentences, **kwargs):
+        def extract_entities(self, chunks, **kwargs):
             return []
             
     strategy = EntityBasedChunking(

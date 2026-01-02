@@ -192,7 +192,7 @@ class EntityBasedChunking(BaseStrategy):
         self.window_size = window_size
         self.window_overlap = window_overlap
 
-    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+    def execute(self, data: str, context: ExecutionContext) -> List[EntityChunkPayload]:
         if not data:
             return []
 
@@ -209,24 +209,11 @@ class EntityBasedChunking(BaseStrategy):
             window_overlap=self.window_overlap,
         )
 
-        entity_payloads = []
-
-        for result in ner_results:
-            children_references = []
-
-            for index in result.indices:
-                if 0 <= index < len(sentence_payloads):
-                    children_references.append(sentence_payloads[index])
-
-            if children_references:
-                entity_payload = EntityChunkPayload(
-                    content=result.entity,
-                    content_raw="",  
-                    entity=result.entity,
-                    type=result.label,
-                    children=children_references,
-                )
-                entity_payloads.append(entity_payload)
+        entity_payloads = self.ner_provider.extract_entities(
+            sentence_payloads,
+            window_size=self.window_size,
+            window_overlap=self.window_overlap,
+        )
 
         return entity_payloads
 
