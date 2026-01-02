@@ -15,7 +15,6 @@ from pumpking.strategies.base import BaseStrategy
 
 class MockZettelProvider:
     def extract_zettels(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ZettelChunkPayload]:
-        # Implementation to be mocked or overridden in specific tests
         return []
 
 
@@ -60,17 +59,14 @@ def test_zettelkasten_strategy_execution_flow():
     3. Normalized chunks are passed to the Provider.
     4. Provider results are returned by the Strategy.
     """
-    # Setup - Input Data
     input_text = "Some raw text."
     physical_chunk = ChunkPayload(content="Paragraph 1", id=uuid.uuid4())
     
-    # Setup - Expected Output
     expected_zettel = ZettelChunkPayload(
         hypothesis="Hypothesis 1",
         children=[physical_chunk]
     )
 
-    # Setup - Mocks
     mock_splitter = MockSplitter(return_payloads=[physical_chunk])
     mock_provider = Mock(spec=ZettelProviderProtocol)
     mock_provider.extract_zettels.return_value = [expected_zettel]
@@ -78,15 +74,12 @@ def test_zettelkasten_strategy_execution_flow():
     strategy = ZettelkastenChunking(splitter=mock_splitter, provider=mock_provider)
     context = ExecutionContext()
 
-    # Execute
     results = strategy.execute(input_text, context)
 
-    # Assertions
     assert len(results) == 1
     assert results[0] == expected_zettel
     assert results[0].children[0] == physical_chunk
     
-    # Verify delegation
     mock_provider.extract_zettels.assert_called_once()
     call_args = mock_provider.extract_zettels.call_args[0][0]
     assert len(call_args) == 1
@@ -99,43 +92,34 @@ def test_zettelkasten_strategy_annotation_logic():
     executed against the Zettel's 'hypothesis' field, and the results are
     stored in the 'annotations' dictionary under the correct alias.
     """
-    # Setup - Input Data
     physical_chunk = ChunkPayload(content="Original text about Apple.")
     
-    # Setup - Provider Result (The Zettel)
     zettel_result = ZettelChunkPayload(
         hypothesis="Apple Inc. released a new product.",
         children=[physical_chunk]
     )
 
-    # Setup - Mocks
     mock_splitter = MockSplitter(return_payloads=[physical_chunk])
     mock_provider = Mock(spec=ZettelProviderProtocol)
     mock_provider.extract_zettels.return_value = [zettel_result]
 
-    # Setup - Annotator Mock
     mock_ner_result = [
         EntityChunkPayload(entity="Apple Inc.", type="ORG", content="Apple Inc.")
     ]
     mock_annotator = Mock(spec=BaseStrategy)
     mock_annotator.execute.return_value = mock_ner_result
 
-    # Setup - Strategy & Context
     strategy = ZettelkastenChunking(splitter=mock_splitter, provider=mock_provider)
     context = ExecutionContext(annotators={"ner": mock_annotator})
 
-    # Execute
     results = strategy.execute("dummy input", context)
 
-    # Assertions
     assert len(results) == 1
     annotated_zettel = results[0]
 
-    # Check that annotation occurred
     assert "ner" in annotated_zettel.annotations
     assert annotated_zettel.annotations["ner"] == mock_ner_result
     
-    # Check that the annotator was called with the HYPOTHESIS, not the raw content
     mock_annotator.execute.assert_called_once()
     called_text = mock_annotator.execute.call_args[0][0]
     assert called_text == "Apple Inc. released a new product."
@@ -147,7 +131,6 @@ def test_zettelkasten_strategy_handles_string_splitter_output():
     ChunkPayloads, the strategy should normalize them into ChunkPayloads 
     before sending them to the Provider.
     """
-    # Setup - Splitter returning strings
     mock_splitter = Mock(spec=BaseStrategy)
     mock_splitter.execute.return_value = ["String chunk 1", "String chunk 2"]
 
@@ -157,10 +140,8 @@ def test_zettelkasten_strategy_handles_string_splitter_output():
     strategy = ZettelkastenChunking(splitter=mock_splitter, provider=mock_provider)
     context = ExecutionContext()
 
-    # Execute
     strategy.execute("dummy input", context)
 
-    # Assertions
     mock_provider.extract_zettels.assert_called_once()
     passed_chunks = mock_provider.extract_zettels.call_args[0][0]
     

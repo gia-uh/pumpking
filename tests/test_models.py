@@ -4,11 +4,8 @@ from pumpking.models import (
     ChunkPayload,
     DocumentRoot,
     EntityChunkPayload,
-    EntityChunkNode,
     TopicChunkPayload,
-    TopicChunkNode,
     ContextualChunkPayload,
-    ContextualChunkNode,
 )
 
 
@@ -72,10 +69,10 @@ def test_chunk_node_separation_of_concerns():
     assert data["branches"][0]["strategy_label"] == "sentence_splitter"
 
 
-def test_specialized_nodes_and_payloads():
+def test_specialized_payloads_integrity():
     """
-    Tests the integrity of specialized nodes ensuring they maintain
-    specific metadata and their result payloads with Markdown examples.
+    Tests the integrity of specialized payloads ensuring they correctly serialize
+    specific metadata fields mandated by the domain model.
     """
     entity_payload = EntityChunkPayload(
         content="Apple Inc.",
@@ -83,39 +80,32 @@ def test_specialized_nodes_and_payloads():
         entity="Apple Inc.",
         type="ORG",
     )
-    entity_node = EntityChunkNode(
-        entity="Apple Inc.", type="ORG", results=[entity_payload]
-    )
 
     topic_payload = TopicChunkPayload(
         content="Technology Section",
         content_raw="== Technology Section ==",
         topic="Technology",
     )
-    topic_node = TopicChunkNode(topic="Technology", results=[topic_payload])
 
     context_payload = ContextualChunkPayload(
         content="The quarterly report shows growth.",
         content_raw="_The quarterly report shows growth._",
         context="Annual General Meeting",
     )
-    context_node = ContextualChunkNode(
-        context="Annual General Meeting", results=[context_payload]
-    )
 
-    e_data = entity_node.to_dict()
-    t_data = topic_node.to_dict()
-    c_data = context_node.to_dict()
+    e_data = entity_payload.to_dict()
+    t_data = topic_payload.to_dict()
+    c_data = context_payload.to_dict()
 
     assert e_data["entity"] == "Apple Inc."
     assert e_data["type"] == "ORG"
-    assert e_data["results"][0]["content_raw"] == "**Apple Inc.**"
+    assert e_data["content_raw"] == "**Apple Inc.**"
 
     assert t_data["topic"] == "Technology"
-    assert t_data["results"][0]["content_raw"] == "== Technology Section =="
+    assert t_data["content_raw"] == "== Technology Section =="
 
     assert c_data["context"] == "Annual General Meeting"
-    assert c_data["results"][0]["content_raw"] == "_The quarterly report shows growth._"
+    assert c_data["content_raw"] == "_The quarterly report shows growth._"
 
 
 def test_document_root_structure():

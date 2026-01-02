@@ -3,12 +3,8 @@ from html.parser import HTMLParser
 from typing import List, Optional, Any, Union, Type, Dict
 from pumpking.models import (
     ChunkPayload,
-    ChunkNode,
     EntityChunkPayload,
-    EntityChunkNode,
-    TopicChunkNode,
     TopicChunkPayload,
-    ContextualChunkNode,
     ContextualChunkPayload,
     ZettelChunkPayload
 )

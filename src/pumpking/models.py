@@ -85,27 +85,7 @@ class ChunkNode(PumpkingBaseModel):
     results: List[ChunkPayload] = Field(default_factory=list)
     branches: List["ChunkNode"] = Field(default_factory=list)
 
-class EntityChunkNode(ChunkNode):
-    """
-    Node specialization that preserves entity metadata for direct access 
-    within the execution graph.
-    """
-    entity: Optional[str] = None
-    type: Optional[str] = None
 
-class TopicChunkNode(ChunkNode):
-    """
-    Node specialization that preserves topic metadata for direct access 
-    within the execution graph.
-    """
-    topic: Optional[str] = None
-
-class ContextualChunkNode(ChunkNode):
-    """
-    Node specialization that preserves contextual metadata for direct access 
-    within the execution graph.
-    """
-    context: Optional[str] = None
 
 class DocumentRoot(PumpkingBaseModel):
     """
