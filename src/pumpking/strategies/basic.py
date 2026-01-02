@@ -13,9 +13,6 @@ class RegexChunking(BaseStrategy):
     Supports optional whitespace collapsing.
     """
 
-    SUPPORTED_INPUTS: List[Any] = [str, ChunkPayload]
-    PRODUCED_OUTPUT: Any = List[ChunkPayload]
-
     def __init__(self, pattern: str, collapse_whitespace: bool = True) -> None:
         self.pattern = pattern
         self.collapse_whitespace = collapse_whitespace
@@ -55,9 +52,6 @@ class FixedSizeChunking(BaseStrategy):
     """
     Splits text into fixed-size segments with optional overlap.
     """
-
-    SUPPORTED_INPUTS: List[Any] = [str, ChunkPayload]
-    PRODUCED_OUTPUT: Any = List[ChunkPayload]
 
     def __init__(self, chunk_size: int, overlap: int = 0) -> None:
         if chunk_size <= 0:
@@ -132,8 +126,6 @@ class SlidingWindowChunking(BaseStrategy):
     Splits text into fixed-size word windows with overlap.
     """
 
-    SUPPORTED_INPUTS: List[Any] = [str, ChunkPayload]
-    PRODUCED_OUTPUT: Any = List[ChunkPayload]
 
     def __init__(self, window_size: int, overlap: int) -> None:
         if window_size <= 0:

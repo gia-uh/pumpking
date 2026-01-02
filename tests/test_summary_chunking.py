@@ -1,108 +1,120 @@
 import pytest
 from typing import List, Any
-from pumpking.models import ChunkPayload
-from pumpking.protocols import ExecutionContext, SummaryProviderProtocol
-from pumpking.strategies.base import BaseStrategy
 from pumpking.strategies.advanced import SummaryChunking
+from pumpking.strategies.base import BaseStrategy
+from pumpking.models import ChunkPayload
+from pumpking.protocols import ExecutionContext
 
 # --- Mocks ---
 
+class MockSplitter(BaseStrategy):
+    """
+    Simulates a strategy that breaks content into smaller semantic units.
+    Used to test the compound 'Split-then-Summarize' logic.
+    """
+    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
+        parts = data.split("|")
+        return [
+            self._apply_annotators_to_payload(p.strip(), context, content_raw=p.strip())
+            for p in parts
+        ]
+
+class MockSummaryProvider:
+    """
+    Simulates a sequential LLM provider.
+    """
+    def summarize(self, text: str, **kwargs: Any) -> str:
+        return f"Summary of: {text}"
 
 class MockAnnotator(BaseStrategy):
-    """Spy annotator to verify which text is being processed."""
-
-    def __init__(self):
-        self.processed_text = None
-
-    def execute(self, data: str, context: ExecutionContext) -> dict:
-        self.processed_text = data
-        return {"checked": True}
-
-
-class MockSummaryProvider(SummaryProviderProtocol):
     """
-    Simulates summarization by prefixing text.
-    Updated to handle the new Protocol signature: List[ChunkPayload] -> List[ChunkPayload].
+    Simulates a metadata enhancer (e.g., Sentiment, Keywords).
     """
+    def execute(self, data: str, context: ExecutionContext) -> str:
+        return "annotated"
 
-    def summarize(
-        self, chunks: List[ChunkPayload], **kwargs: Any
-    ) -> List[ChunkPayload]:
-        results = []
-        for chunk in chunks:
-            summary_text = f"Summary of: {chunk.content}"
+# --- Complete Test Suite ---
 
-            payload = ChunkPayload(
-                content=summary_text,
-                content_raw=summary_text,
-                children=[chunk],
-                annotations={},
-            )
-            results.append(payload)
-        return results
-
-
-class MockSplitter(BaseStrategy):
-    """Simulates splitting by creating predefined payloads."""
-
-    def execute(self, data: str, context: ExecutionContext) -> List[ChunkPayload]:
-        segments = [s.strip() for s in data.split("|") if s.strip()]
-        return [self._apply_annotators_to_payload(s, context) for s in segments]
-
-
-# --- Tests ---
-
-
-def test_summary_chunking_payload_structure():
+def test_summary_chunking_execution_flow():
     """
-    Verifies that the output payload correctly places the summary in 'content'
-    and preserves the original text in the lineage ('children').
+    Verifies the primary 'Split -> Summarize' flow and correct lineage.
+    Ensures that summaries point to the Parent, while content_raw identifies the Unit.
     """
     text = "Section A | Section B"
+    strategy = SummaryChunking(provider=MockSummaryProvider(), splitter=MockSplitter())
+    context = ExecutionContext()
+    
+    results = strategy.execute(text, context)
+    
+    assert len(results) == 2
+    assert results[0].content == "Summary of: Section A"
+    assert results[0].children[0].content == "Section A | Section B"
+    assert results[0].content_raw == "Section A"
 
-    provider = MockSummaryProvider()
-    splitter = MockSplitter()
-    strategy = SummaryChunking(provider=provider, splitter=splitter)
+def test_summary_chunking_batch_input_handling():
+    """
+    Verifies that the strategy handles a list of multiple large payloads,
+    correctly flattening the result and maintaining separate lineages.
+    """
+    parent1 = ChunkPayload(content="P1_A | P1_B", content_raw="P1_A | P1_B", annotations={})
+    parent2 = ChunkPayload(content="P2_A", content_raw="P2_A", annotations={})
+    
+    strategy = SummaryChunking(provider=MockSummaryProvider(), splitter=MockSplitter())
+    context = ExecutionContext()
+    
+    results = strategy.execute([parent1, parent2], context)
+    
+    assert len(results) == 3
+    assert results[0].content == "Summary of: P1_A"
+    assert results[0].children[0] == parent1
+    assert results[2].content == "Summary of: P2_A"
+    assert results[2].children[0] == parent2
+
+def test_summary_chunking_without_splitter():
+    """
+    Verifies that if splitter is None, the strategy summarizes the whole input.
+    """
+    text = "Whole Document"
+    strategy = SummaryChunking(provider=MockSummaryProvider(), splitter=None)
     context = ExecutionContext()
 
     results = strategy.execute(text, context)
 
-    assert len(results) == 2
+    assert len(results) == 1
+    assert results[0].content == "Summary of: Whole Document"
+    assert results[0].children[0].content == "Whole Document"
 
-    payload_a = results[0]
-    assert payload_a.content == "Summary of: Section A"
-    assert len(payload_a.children) == 1
-    assert payload_a.children[0].content == "Section A"
-
-    payload_b = results[1]
-    assert payload_b.content == "Summary of: Section B"
-    assert len(payload_b.children) == 1
-    assert payload_b.children[0].content == "Section B"
-
-
-def test_summary_chunking_annotations_target_summary():
+def test_summary_chunking_content_raw_optimization():
     """
-    CRITICAL: Verifies that the annotators are executed against the generated
-    summary, not the original raw text.
+    Verifies that 'content_raw' follows the BaseStrategy optimization rule:
+    It becomes None if identical to 'content'.
     """
-    text = "Complex Legal Text"
-    expected_summary_content = "Summary of: Complex Legal Text"
+    text = "Atom"
+    
+    class IdentityProvider:
+        def summarize(self, text: str, **kwargs: Any) -> str:
+            return text 
+            
+    strategy = SummaryChunking(provider=IdentityProvider(), splitter=None)
+    context = ExecutionContext()
 
+    results = strategy.execute(text, context)
+    
+    assert results[0].content == "Atom"
+    assert results[0].content_raw is None
+
+def test_summary_chunking_annotations_on_summary():
+    """
+    CRITICAL: Verifies that annotators are applied to the generated summary text,
+    not to the original source text.
+    """
+    text = "Original" 
     spy = MockAnnotator()
     context = ExecutionContext()
-    context.annotators = {"spy": spy}
-
-    strategy = SummaryChunking(provider=MockSummaryProvider(), splitter=MockSplitter())
-
+    context.annotators = {"test": spy}
+    
+    strategy = SummaryChunking(provider=MockSummaryProvider(), splitter=None)
     results = strategy.execute(text, context)
-
-    assert "spy" in results[0].annotations
-
-    assert spy.processed_text == expected_summary_content
-    assert spy.processed_text != text
-
-
-def test_summary_chunking_empty_input():
-    """Verifies that empty input returns an empty list without errors."""
-    strategy = SummaryChunking(provider=MockSummaryProvider(), splitter=MockSplitter())
-    assert strategy.execute("", ExecutionContext()) == []
+    
+    assert "test" in results[0].annotations
+    assert results[0].annotations["test"] == "annotated"

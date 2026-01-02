@@ -88,42 +88,34 @@ def test_zettelkasten_strategy_execution_flow():
 
 def test_zettelkasten_strategy_annotation_logic():
     """
-    Verifies that if annotators are present in the ExecutionContext, they are
-    executed against the Zettel's 'hypothesis' field, and the results are
-    stored in the 'annotations' dictionary under the correct alias.
+    Verifies the annotation lifecycle for Zettelkasten:
+    1. Annotators run only on original evidence (splitter level).
+    2. Hypothesis remains a pure metadata field without annotations.
     """
     physical_chunk = ChunkPayload(content="Original text about Apple.")
-    
     zettel_result = ZettelChunkPayload(
         hypothesis="Apple Inc. released a new product.",
         children=[physical_chunk]
     )
-
+    
     mock_splitter = MockSplitter(return_payloads=[physical_chunk])
     mock_provider = Mock(spec=ZettelProviderProtocol)
     mock_provider.extract_zettels.return_value = [zettel_result]
-
-    mock_ner_result = [
-        EntityChunkPayload(entity="Apple Inc.", type="ORG", content="Apple Inc.")
-    ]
+    
     mock_annotator = Mock(spec=BaseStrategy)
-    mock_annotator.execute.return_value = mock_ner_result
-
+    
     strategy = ZettelkastenChunking(splitter=mock_splitter, provider=mock_provider)
     context = ExecutionContext(annotators={"ner": mock_annotator})
-
-    results = strategy.execute("dummy input", context)
-
-    assert len(results) == 1
-    annotated_zettel = results[0]
-
-    assert "ner" in annotated_zettel.annotations
-    assert annotated_zettel.annotations["ner"] == mock_ner_result
     
-    mock_annotator.execute.assert_called_once()
-    called_text = mock_annotator.execute.call_args[0][0]
-    assert called_text == "Apple Inc. released a new product."
-
+    results = strategy.execute("dummy input", context)
+    
+    annotated_zettel = results[0]
+    
+    assert "ner" not in annotated_zettel.annotations
+    assert len(annotated_zettel.annotations) == 0
+    
+    for call in mock_annotator.execute.call_args_list:
+        assert call[0][0] != "Apple Inc. released a new product."
 
 def test_zettelkasten_strategy_handles_string_splitter_output():
     """

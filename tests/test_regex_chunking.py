@@ -1,84 +1,67 @@
 import pytest
-from typing import List
-from pumpking.models import ChunkPayload
-from pumpking.pipeline import Step, PumpkingPipeline
-from pumpking.protocols import ExecutionContext
-from pumpking.strategies.base import BaseStrategy
+from typing import List, Union
 from pumpking.strategies.basic import RegexChunking
+from pumpking.models import ChunkPayload
+from pumpking.protocols import ExecutionContext
+from pumpking.pipeline import Step, PumpkingPipeline
+from pumpking.strategies.base import BaseStrategy
 
-# --- Mocks and Data ---
+# --- Fixtures and Mocks ---
 
 COMPLEX_MARKDOWN = """# System Architecture
 
-The system is built using a **microservices** architecture.
+The system is composed of three main modules:
+1. Core Kernel
+2. Network Interface
+3. Storage Manager
 
-## Core Components
+## Core Kernel
+Handles process scheduling and memory management.
 
-1. **API Gateway**: Handles incoming requests.
-2. **Auth Service**: Manages user identity.
-   * Supports OAuth2.
-   * Supports JWT.
+## Network Interface
+Manages TCP/IP stack.
+"""
 
-## Data Flow
-
-```json
-{
-  "source": "Client",
-  "destination": "Server"
-}
-
-Future Roadmap
-
-> Warning: This module is deprecated. """
 
 class SpyStrategy(BaseStrategy):
     """
-    A simple strategy used to capture output for verification.
+    Mock strategy to inspect what data is passed to the next step.
+    UPDATED: Handles input normalization (str vs Payload) to support chaining.
     """
-    SUPPORTED_INPUTS = [str]
-    PRODUCED_OUTPUT = ChunkPayload
 
-    def __init__(self):
-        self.received_payloads: List[ChunkPayload] = []
-
-    def execute(self, data: str, context: ExecutionContext) -> ChunkPayload:
-        payload = self._apply_annotators_to_payload(data, context)
-        self.received_payloads.append(payload)
+    def execute(self, data: Union[str, ChunkPayload], context: ExecutionContext) -> ChunkPayload:
+        content = data.content if isinstance(data, ChunkPayload) else str(data)
+        
+        payload = self._apply_annotators_to_payload(content, context)
         return payload
+
 
 # --- Tests ---
 
-def test_regex_chunking_strategy_pure_logic():
+
+def test_regex_chunking_logic_only():
     """
-    Verifies the core splitting logic of RegexChunking in isolation.
-    
-    This test ensures that:
-    1. The strategy correctly splits text based on the newline pattern.
-    2. It returns a list of ChunkPayload objects.
-    3. The content of the payloads matches the expected markdown sections.
+    Verifies the core logic of RegexChunking in isolation.
     """
-    strategy = RegexChunking(pattern=r"\n\n+")
+    chunker = RegexChunking(pattern=r"\n\n+")
     context = ExecutionContext()
     
-    payloads = strategy.execute(COMPLEX_MARKDOWN, context)
-
-    assert isinstance(payloads, list)
-    assert len(payloads) >= 6
-    assert isinstance(payloads[0], ChunkPayload)
-
-    assert payloads[0].content == "# System Architecture"
+    results = chunker.execute(COMPLEX_MARKDOWN, context)
     
-    assert "microservices" in payloads[1].content
-    assert payloads[2].content == "## Core Components"
-    assert "1. **API Gateway**" in payloads[3].content
-    assert "* Supports OAuth2." in payloads[3].content
-    assert payloads[4].content == "## Data Flow"
-    assert "```json" in payloads[5].content
+    assert len(results) == 4
+    
+    assert "# System Architecture" in results[0].content
+    assert "The system is composed" in results[1].content
+    assert "## Core Kernel" in results[2].content
+    assert "## Network Interface" in results[3].content
+    
+    assert all(isinstance(r, ChunkPayload) for r in results)
+
 
 def test_regex_chunking_pipeline_integration_flow():
     """
     Verifies RegexChunking behavior when orchestrated within a Pipeline.
-    
+
     This test ensures that:
     1. The Step adapter correctly handles the list of Payloads produced by RegexChunking.
     2. The downstream step (SpyStrategy) receives the individual segments as input.
@@ -88,16 +71,15 @@ def test_regex_chunking_pipeline_integration_flow():
     spy = SpyStrategy()
 
     pipeline = PumpkingPipeline(Step(chunker) >> Step(spy))
-
-    root_node = pipeline.run(COMPLEX_MARKDOWN)
-
-    assert root_node.document == COMPLEX_MARKDOWN
-
-    captured_contents = [p.content for p in spy.received_payloads]
     
-    assert len(captured_contents) >= 6
-    assert "# System Architecture" in captured_contents
-    assert "## Core Components" in captured_contents
-
-    assert captured_contents[0] == "# System Architecture"
-    assert "microservices" in captured_contents[1]
+    root_node = pipeline.run(COMPLEX_MARKDOWN)
+    
+    chunker_node_branches = root_node.branches
+    assert len(chunker_node_branches) == 4
+    
+    for branch in chunker_node_branches:
+        assert len(branch.branches) == 1
+        spy_node = branch.branches[0]
+        assert spy_node.strategy_label == "SpyStrategy"
+        
+        assert spy_node.results[0].content == branch.results[0].content

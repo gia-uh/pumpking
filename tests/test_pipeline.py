@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Union
 from pumpking.pipeline import Step, PumpkingPipeline, annotate
 from pumpking.models import ChunkNode, ChunkPayload
 from pumpking.protocols import ExecutionContext
@@ -26,7 +26,9 @@ class MockSplitter(BaseStrategy):
     Uses helper to apply context annotations to list items.
     """
 
-    def execute(self, text: str, context: ExecutionContext) -> List[ChunkPayload]:
+    def execute(
+        self, data: Union[str, ChunkPayload], context: ExecutionContext
+    ) -> List[ChunkPayload]:
         parts = ["part_a", "part_b"]
         return self._apply_annotators_to_list(parts, context)
 
@@ -37,14 +39,19 @@ class MockIdentityStrategy(BaseStrategy):
     CRITICAL FIX: Explicitly applies annotators from context using helper.
     """
 
-    def execute(self, text: str, context: ExecutionContext) -> ChunkPayload:
-        return self._apply_annotators_to_payload(text, context)
+    def execute(
+        self, data: Union[str, ChunkPayload], context: ExecutionContext
+    ) -> ChunkPayload:
+        content = data.content if isinstance(data, ChunkPayload) else str(data)
+        return self._apply_annotators_to_payload(content, context)
 
 
 class MockSpecStrategy(BaseStrategy):
     """Returns specialized payloads to verify the dynamic factory."""
 
-    def execute(self, text: str, context: ExecutionContext) -> List[MockSpecialPayload]:
+    def execute(
+        self, data: Union[str, ChunkPayload], context: ExecutionContext
+    ) -> List[MockSpecialPayload]:
         return [MockSpecialPayload(content="data", content_raw="raw")]
 
 

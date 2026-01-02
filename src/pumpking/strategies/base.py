@@ -2,6 +2,7 @@ from typing import Any, List, Optional, Union
 from pumpking.models import ChunkPayload
 from pumpking.protocols import StrategyProtocol, ExecutionContext
 
+
 class BaseStrategy(StrategyProtocol):
     """
     Base class for all strategies, providing core infrastructure for payload creation
@@ -17,25 +18,28 @@ class BaseStrategy(StrategyProtocol):
     that all payloads are consistently instantiated and automatically processed by
     any configured annotators in the ExecutionContext.
     """
-    
-    SUPPORTED_INPUTS: List[Any] = [str, List[str], ChunkPayload]
-    PRODUCED_OUTPUT: Any = List[ChunkPayload]
 
-    def execute(self, data: Union[str, ChunkPayload], context: ExecutionContext) -> Any:
+    def execute(self, data: Union[str, ChunkPayload, List[ChunkPayload]], context: ExecutionContext) -> List[ChunkPayload]:
         """
         Abstract method that must be implemented by all concrete strategies.
 
         This method defines the specific processing logic of the strategy.
-        It receives input data (which can be raw text or an existing ChunkPayload
-        from a previous step) and an execution context. It must return the
-        transformed data defined in PRODUCED_OUTPUT.
+        It receives input data which can vary in type to support different
+        processing paradigms:
+        - str: Raw text input for initial processing.
+        - ChunkPayload: A single processed object for sequential refinement (Chain).
+        - List[ChunkPayload]: A batch of objects for optimized group processing (Batching).
+
+        Concrete implementations should strictly define their supported input types
+        via type hints to allow the Pipeline orchestrator to correctly dispatch
+        data (either by iterating or passing the full batch).
 
         Args:
             data: The input data to be processed.
             context: The shared execution context containing configuration and annotators.
 
         Returns:
-            The processed result, typically a list of ChunkPayloads.
+            The processed result, consistently returning a list of ChunkPayloads.
 
         Raises:
             NotImplementedError: If the subclass does not implement this method.
@@ -55,6 +59,11 @@ class BaseStrategy(StrategyProtocol):
         It first instantiates a ChunkPayload with the provided content (which may be
         processed text like a summary) and the raw content (the original source).
         
+        It implements a storage optimization logic: if the provided 'content_raw' is
+        identical to the 'content' (or if it is not provided), the 'content_raw' field
+        in the payload is set to None. This prevents data duplication when the source
+        and the result are the same string.
+
         After instantiation, it iterates through the annotators defined in the
         ExecutionContext. Each annotator is executed against the 'content' field
         of the payload. This ensures that metadata (such as sentiment analysis or
@@ -68,14 +77,18 @@ class BaseStrategy(StrategyProtocol):
         Args:
             content: The primary text content of the payload (e.g., summary, translation).
             context: The execution context containing the registry of annotators.
-            content_raw: The original source text. If not provided, it defaults to 'content'.
+            content_raw: The original source text. If not provided, or if identical 
+                to content, it will be stored as None.
 
         Returns:
             A fully initialized ChunkPayload instance with populated annotations.
         """
+        if content_raw == content:
+            content_raw = None
+
         payload = ChunkPayload(
             content=content,
-            content_raw=content_raw or content,
+            content_raw=content_raw,
             annotations={}
         )
         
@@ -112,4 +125,4 @@ class BaseStrategy(StrategyProtocol):
         Returns:
             A list of fully annotated ChunkPayload objects.
         """
-        return [self._apply_annotators_to_payload(item, context) for item in items]
+        return [self._apply_annotators_to_payload(item, context, content_raw=item) for item in items]
