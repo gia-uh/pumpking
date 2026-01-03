@@ -472,7 +472,6 @@ class LLMSummaryProvider(SummaryProviderProtocol):
             summaries: List[str]
 
         try:
-            # We override temperature to a low value for determinism in summaries unless specified
             kwargs.setdefault("temperature", 0.2)
             
             completion = self.backend.create_completion(
