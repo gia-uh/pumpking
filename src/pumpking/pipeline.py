@@ -100,20 +100,16 @@ class Step:
         Rely on 'children' field in payloads to resolve parents.
         """
         all_inputs = [item for item, _ in inputs_with_parents]
-        lineage_map = {id(item): pid for item, pid in inputs_with_parents}
-        
+        lineage_map = {item.id: pid for item, pid in inputs_with_parents}        
         raw_results = self.strategy.execute(all_inputs, context)
         
-        # Normalize result to list
         if not isinstance(raw_results, list):
             raw_results = [raw_results]
             
         new_nodes = []
         for result_payload in raw_results:
-            # For batch strategies, we expect them to link back to source via children
             parent_id = self._resolve_parent_id(result_payload, lineage_map)
             
-            # Create and attach node
             node = self._create_node([result_payload], parent_id=parent_id)
             self._attach_to_parent(node, parent_id, origin_nodes)
             new_nodes.append(node)
@@ -134,14 +130,12 @@ class Step:
         for item, p_id in inputs_with_parents:
             raw_result = self.strategy.execute(item, context)
             
-            # Normalize result to list (Strategy might return one or many payloads)
             if isinstance(raw_result, list):
                 results_list = raw_result
             else:
                 results_list = [raw_result]
             
             for res in results_list:
-                # In iterative mode, we know exactly which parent this result belongs to
                 node = self._create_node([res], parent_id=p_id)
                 self._attach_to_parent(node, p_id, origin_nodes)
                 new_nodes.append(node)
@@ -172,19 +166,15 @@ class Step:
             type_hints = get_type_hints(strategy.execute)
             
             for name, param in sig.parameters.items():
-                # Skip implicit self and the context argument
                 if name == 'self' or name == 'context':
                     continue
                 
-                # Check the first data argument found
-                # We prioritize the resolved type hint if available
                 hint = type_hints.get(name, param.annotation)
                 return self._type_allows_list(hint)
                 
-            return False # No data argument found?
+            return False 
             
         except Exception:
-            # Fallback: strict safety, assume no batch support if introspection fails
             return False
 
     def _type_allows_list(self, type_hint: Any) -> bool:
@@ -192,10 +182,6 @@ class Step:
         Recursively checks if a type hint implies support for List input.
         """
         if type_hint is Any:
-            # Ideally Any allows list, but for safety in ambiguous mocks
-            # checking if it STRICTLY allows list is safer. 
-            # However, 'Any' implies it can handle anything.
-            # Let's assume True, but Mocks should be explicit.
             return True
 
         origin = get_origin(type_hint)
@@ -213,16 +199,15 @@ class Step:
     def _resolve_parent_id(
         self, 
         payload: ChunkPayload, 
-        lineage_map: Dict[int, uuid.UUID]
+        lineage_map: Dict[uuid.UUID, uuid.UUID]
     ) -> Optional[uuid.UUID]:
         """
         Identifies the parent node ID for a given result payload based on lineage.
         """
         if payload.children:
             primary_source = payload.children[0]
-            source_id = id(primary_source)
-            if source_id in lineage_map:
-                return lineage_map[source_id]
+            if primary_source.id in lineage_map:
+                return lineage_map[primary_source.id]
         return None
 
     def _get_node_class(self, payloads: List[ChunkPayload]) -> Type[ChunkNode]:
