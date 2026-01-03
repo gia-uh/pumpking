@@ -100,7 +100,11 @@ class Step:
         Rely on 'children' field in payloads to resolve parents.
         """
         all_inputs = [item for item, _ in inputs_with_parents]
-        lineage_map = {item.id: pid for item, pid in inputs_with_parents}        
+        lineage_map = {
+            item.id: pid 
+            for item, pid in inputs_with_parents 
+            if isinstance(item, ChunkPayload)
+        }
         raw_results = self.strategy.execute(all_inputs, context)
         
         if not isinstance(raw_results, list):
