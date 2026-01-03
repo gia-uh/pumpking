@@ -2,23 +2,23 @@ import uuid
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 
+
 class PumpkingBaseModel(BaseModel):
     """
-    Base abstraction for all data models within the Pumpking architecture.
+    Base abstraction for all Pumpking data models, providing unified serialization behavior.
 
-    This class provides essential utility methods for data serialization and sanitization.
-    It ensures that all derived models can be converted to dictionary representations
-    free of noise, such as null values or empty data structures, which facilitates
-    cleaner storage and API responses.
+    This class serves as the foundation for the domain model, ensuring consistent
+    conversion to dictionary formats. It implements recursive sanitization logic to
+    prune empty values (None, empty dicts, empty lists) from the serialized output,
+    resulting in cleaner API payloads and storage representations.
     """
 
     def to_dict(self) -> Dict[str, Any]:
         """
-        Converts the model instance into a dictionary, recursively removing empty values.
+        Serializes the model to a dictionary and removes all empty fields recursively.
 
         Returns:
-            Dict[str, Any]: A sanitized dictionary representation of the model where
-            None, empty dictionaries, and empty lists have been pruned.
+            Dict[str, Any]: A sanitized dictionary representation of the model instance.
         """
         data = self.model_dump(mode="json", exclude_none=True)
         return self._clean_empty(data)
@@ -26,16 +26,13 @@ class PumpkingBaseModel(BaseModel):
     @classmethod
     def _clean_empty(cls, data: Any) -> Any:
         """
-        Recursively traverses a data structure to remove empty elements.
-
-        This method filters out None values, empty dictionaries, and empty lists
-        from nested structures to ensure a compact representation.
+        Recursively traverses a data structure to prune empty elements.
 
         Args:
-            data (Any): The input data structure (dict, list, or primitive).
+            data: The input structure (dict, list, or primitive) to sanitize.
 
         Returns:
-            Any: The cleaned data structure.
+            The cleaned data structure with None, {}, and [] removed.
         """
         if isinstance(data, dict):
             return {
@@ -56,11 +53,10 @@ class ChunkPayload(PumpkingBaseModel):
     """
     The fundamental unit of data transport within the processing pipeline.
 
-    A ChunkPayload encapsulates a segment of text along with its metadata,
-    lineage, and annotations. It serves as the standard container that strategies
-    receive, process, and produce. By maintaining references to children (source chunks),
-    it allows for the construction of a traceable lineage graph from raw text to
-    highly processed insights.
+    A ChunkPayload acts as a container for a segment of text as it flows through
+    strategies. It preserves the content, its raw representation (for debugging or
+    formatting), annotations added by the system, and a lineage history via
+    child references.
     """
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4)
@@ -70,60 +66,26 @@ class ChunkPayload(PumpkingBaseModel):
     children: List["ChunkPayload"] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def clean_fields(self) -> "ChunkPayload":
+    def clean_content_raw(self) -> "ChunkPayload":
         """
-        Validates and sanitizes the model fields after initialization.
-
-        This validator ensures consistency by enforcing the following rules:
-        1. If 'content_raw' is identical to 'content', it is set to None to avoid redundancy.
-        2. If 'content' is an empty string, it is set to None.
+        Optimizes storage by removing the 'content_raw' field if it is identical
+        to the 'content' field.
 
         Returns:
-            ChunkPayload: The validated model instance.
+            ChunkPayload: The validated instance with potentially cleared content_raw.
         """
         if self.content_raw == self.content:
             self.content_raw = None
-        if self.content == "":
-            self.content = None
         return self
-
-
-class ChunkNode(PumpkingBaseModel):
-    """
-    Represents a node within the persistent structural graph of the document.
-
-    Unlike ChunkPayload, which is a transient transport container used during
-    processing, ChunkNode is designed for graph storage. It wraps a payload
-    and explicitly links it to a parent node via a UUID, establishing the
-    hierarchical relationship required for tree traversals and reconstruction.
-    """
-
-    id: uuid.UUID
-    payload: ChunkPayload
-    parent_id: Optional[uuid.UUID] = None
-
-
-class DocumentRoot(PumpkingBaseModel):
-    """
-    The root anchor for a processed document's graph.
-
-    This class serves as the entry point for a document's structural representation.
-    It holds the initial raw content and a unique identifier that connects all
-    subsequent nodes generated during the chunking and analysis phases.
-    """
-
-    id: uuid.UUID
-    document: str
 
 
 class EntityChunkPayload(ChunkPayload):
     """
-    A specialized payload representing a Named Entity identified in the text.
+    A specialized payload representing a named entity extracted from text.
 
-    This class extends ChunkPayload to capture specific attributes of an entity,
-    such as its name and classification type (e.g., Person, Organization).
-    It retains all standard payload capabilities, including lineage tracking,
-    to trace the entity back to its source text.
+    This class extends the base payload to include strict typing for entity-specific
+    metadata, such as the entity's canonical name and its classification type
+    (e.g., Person, Organization, Location).
     """
 
     entity: str
@@ -132,11 +94,10 @@ class EntityChunkPayload(ChunkPayload):
 
 class TopicChunkPayload(ChunkPayload):
     """
-    A specialized payload representing a thematic topic or category.
+    A specialized payload representing a thematic cluster or topic.
 
-    This class allows for the grouping of content under a unifying semantic label.
-    It is used when the processing strategy identifies a dominant subject
-    encompassing multiple text segments.
+    Used by topic modeling strategies to encapsulate a high-level subject
+    that groups underlying content chunks.
     """
 
     topic: str
@@ -144,25 +105,60 @@ class TopicChunkPayload(ChunkPayload):
 
 class ContextualChunkPayload(ChunkPayload):
     """
-    A specialized payload that enriches a text segment with situational context.
+    A specialized payload enriched with situational context.
 
-    This model is designed to solve the problem of lost context in retrieval-augmented
-    generation (RAG) systems. It stores the explicit 'context' (e.g., resolved pronouns,
-    background information) alongside the original content, making the chunk
-    self-sufficient for downstream retrieval tasks.
+    Designed for RAG workflows, this payload stores generated context (such as
+    resolved pronouns or document-level background) separately from the original
+    text content, ensuring the source material remains pristine.
     """
 
     context: str
 
 
+class ChunkNode(PumpkingBaseModel):
+    """
+    Represents a structural node in the execution graph (pipeline trace).
+
+    Unlike a ChunkPayload which holds data, a ChunkNode holds the *result* of a
+    strategy execution step and defines the flow to subsequent steps (branches).
+    It persists the hierarchy of how data was processed, linking inputs to outputs.
+    """
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    parent_id: Optional[uuid.UUID] = None
+    strategy_label: Optional[str] = None
+    results: List[ChunkPayload] = Field(default_factory=list)
+    branches: List["ChunkNode"] = Field(default_factory=list)
+
+
+class DocumentRoot(PumpkingBaseModel):
+    """
+    The root anchor of a processed document's execution graph.
+
+    This object encapsulates the initial state of a document before any processing,
+    holding the full raw text and metadata. It serves as the origin point for all
+    subsequent processing branches.
+    """
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    document: str
+    original_filename: Optional[str] = None
+    branches: List[ChunkNode] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ZettelChunkPayload(ChunkPayload):
     """
-    Represents an atomic knowledge unit or 'Zettel' derived from the analysis
-    of text fragments.
+    Represents an atomic knowledge unit (Zettel) derived from semantic analysis.
 
-    Unlike standard physical chunks, a Zettel encapsulates a distinct, synthesized
-    concept that possesses its own identity and relationships within a knowledge graph.
-    It is the output of deep semantic analysis strategies (Zettelkasten).
+    A Zettel is a synthesized concept with a hypothesis, tags, and relationships
+    to other Zettels. It is distinct from a physical text chunk as it represents
+    an idea rather than just a segment of characters.
+
+    Attributes:
+        hypothesis: The core idea or thesis statement of the Zettel.
+        tags: Taxonomic labels for categorization.
+        related_zettel_ids: UUIDs of other Zettels connected to this one, forming a graph.
     """
 
     hypothesis: str
