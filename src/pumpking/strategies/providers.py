@@ -1,7 +1,7 @@
 import os
 import difflib
 import uuid
-from typing import List, Optional, Dict, Set, Tuple, Any
+from typing import List, Optional, Dict, Set, Tuple, Any, Union
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -23,22 +23,20 @@ from pumpking.protocols import (
 
 class LLMEntityResult(BaseModel):
     """
-    Internal Data Transfer Object for a single entity detected by the LLM.
+    Internal Data Transfer Object representing a single entity detected by the LLM.
     """
-
     entity: str = Field(..., description="Name of the entity identified.")
     label: str = Field(..., description="Type: PER, ORG, LOC, or MISC.")
     sentences: List[str] = Field(
         ..., description="Exact text of the sentences referring to this entity."
     )
 
-
 class LLMEntityResponse(BaseModel):
     """
-    Internal container for the structured response from the LLM.
+    Internal container for the structured response from the LLM regarding entities.
     """
-
     entities: List[LLMEntityResult]
+
 class LLMTopicAssignment(BaseModel):
     """
     Represents the assignment of semantic topics to a specific text block.
@@ -48,41 +46,36 @@ class LLMTopicAssignment(BaseModel):
     topics: List[str] = Field(..., description="The list of applicable topics derived from the provided taxonomy.")
 
 class LLMTopicResponse(BaseModel):
+    """
+    Structured response for a batch of segments containing topic assignments.
+    """
     assignments: List[LLMTopicAssignment]
 
 class LLMTaxonomyResponse(BaseModel):
+    """
+    Container for a list of topics generated during taxonomy discovery.
+    """
     topics: List[str]
 
 class LLMContextAssignment(BaseModel):
     """
     Data structure for mapping generated context to source fragments via content echoing.
     """
-
     quote: str = Field(
         ..., description="A short excerpt from the start of the fragment"
     )
     context: str = Field(..., description="The situational anchoring information")
 
-
 class LLMContextResponse(BaseModel):
     """
     Container for batch-processed contextual assignments.
     """
-
     assignments: List[LLMContextAssignment]
-
-
-class LLMTopicResponse(BaseModel):
-    """Structured response for a batch of segments."""
-
-    assignments: List[LLMTopicAssignment]
-
 
 class LLMZettelRef(BaseModel):
     """
     Data Transfer Object representing a single Zettel extracted by the LLM.
     """
-
     concept_handle: str = Field(
         ...,
         description="A short, unique, and descriptive title (2-5 words) identifying this specific concept. This handle acts as a semantic anchor for linking.",
@@ -103,25 +96,21 @@ class LLMZettelRef(BaseModel):
         description="A list of 'concept_handles' representing semantic relationships. Can include handles generated in the current batch or provided in the previous context.",
     )
 
-
 class LLMZettelResponse(BaseModel):
     """
     Container for the list of Zettels extracted in a single LLM inference call.
     """
-
     zettels: List[LLMZettelRef]
 
 
-class LLMProvider(
-    NERProviderProtocol,
-    SummaryProviderProtocol,
-    TopicProviderProtocol,
-    ContextualProviderProtocol,
-    ZettelProviderProtocol,
-):
+class LLMBackend:
     """
-    Production-ready LLM Provider with Sliding Window support.
-    Delegates semantic grouping to LLM and performs deterministic index mapping.
+    Central infrastructure component for managing interactions with LLM APIs compatible with the OpenAI library format.
+    
+    This class acts as a shared resource for various specialized providers (NER, Summary, etc.), 
+    encapsulating the client configuration, authentication, and connection details. It ensures 
+    that all downstream strategies utilize a consistent configuration for model selection 
+    and API parameters.
     """
 
     def __init__(
@@ -131,6 +120,15 @@ class LLMProvider(
         default_model: str = "gpt-4o",
         default_temperature: float = 0.0,
     ) -> None:
+        """
+        Initializes the LLM backend with the necessary credentials and default settings.
+
+        Args:
+            api_key: The authentication key for the LLM service. If not provided, it attempts to read from the OPENAI_API_KEY environment variable.
+            base_url: An optional override for the API endpoint, allowing usage of non-OpenAI providers that support the same interface.
+            default_model: The identifier of the model to be used by default for all operations unless overridden.
+            default_temperature: The default sampling temperature to control the randomness of the model's output.
+        """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.client = None
         if self.api_key:
@@ -139,13 +137,218 @@ class LLMProvider(
         self.default_model = default_model
         self.default_temperature = default_temperature
 
+    def create_completion(self, messages: List[Dict[str, str]], response_format: Any, **kwargs: Any) -> Any:
+        """
+        Helper method to execute a structured completion request against the configured LLM client.
+
+        This method centralizes the call to the client's parsing engine, handling the injection 
+        of default parameters such as the model and temperature if they are not explicitly provided 
+        in the keyword arguments.
+
+        Args:
+            messages: A list of message dictionaries representing the conversation history or prompt.
+            response_format: The Pydantic model class defining the expected structure of the response.
+            **kwargs: Additional parameters to override defaults (e.g., 'model', 'temperature').
+
+        Returns:
+            The parsed response object complying with the structure defined in `response_format`.
+
+        Raises:
+            ValueError: If the client has not been initialized with an API key.
+        """
+        if not self.client:
+            raise ValueError("OpenAI Client not initialized. Please provide an API Key.")
+        
+        model = kwargs.get("model", self.default_model)
+        temperature = kwargs.get("temperature", self.default_temperature)
+
+        return self.client.beta.chat.completions.parse(
+            model=model,
+            messages=messages,
+            response_format=response_format,
+            temperature=temperature,
+        )
+
+    def create_chat_completion(self, messages: List[Dict[str, str]], **kwargs: Any) -> Any:
+        """
+        Helper method to execute a standard (unstructured) chat completion request.
+
+        This method is used when the response does not need to adhere to a specific JSON schema 
+        or Pydantic model, returning the raw completion object instead.
+
+        Args:
+            messages: A list of message dictionaries representing the conversation history.
+            **kwargs: Additional parameters to override defaults.
+
+        Returns:
+            The raw response object from the LLM provider.
+        """
+        if not self.client:
+            raise ValueError("OpenAI Client not initialized. Please provide an API Key.")
+
+        model = kwargs.get("model", self.default_model)
+        temperature = kwargs.get("temperature", self.default_temperature)
+        
+        return self.client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+        )
+
+
+class LLMNERProvider(NERProviderProtocol):
+    """
+    Provider specialized in Named Entity Recognition (NER) using LLMs.
+    
+    This class implements the `NERProviderProtocol` and orchestrates the extraction of entities 
+    from text chunks. It utilizes a sliding window approach to process potentially large sequences 
+    of text while maintaining context, and it resolves entity references back to their original 
+    source sentences using fuzzy matching logic.
+    """
+
+    def __init__(self, backend: LLMBackend) -> None:
+        """
+        Initializes the NER provider with a shared backend instance.
+
+        Args:
+            backend: The configured LLMBackend instance used for API interactions.
+        """
+        self.backend = backend
+
+    def extract_entities(
+        self,
+        chunks: List[ChunkPayload],
+        window_size: int = 20,
+        window_overlap: int = 5,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        **kwargs: Any,
+    ) -> List[EntityChunkPayload]:
+        """
+        Orchestrates the Named Entity Recognition process over a sequence of text chunks.
+
+        This method implements a sliding window strategy to analyze chunks. It aggregates local 
+        window results into a global set of unique entities and resolves their occurrences back 
+        to the original physical chunks.
+
+        Args:
+            chunks: The list of physical text segments to be analyzed.
+            window_size: The number of chunks to include in a single LLM prompt context.
+            window_overlap: The number of chunks that overlap between consecutive windows.
+            model: Optional model override.
+            temperature: Optional temperature override.
+            **kwargs: Additional keyword arguments passed to the backend.
+
+        Returns:
+            A list of `EntityChunkPayload` objects, each containing the entity metadata and references 
+            to the original source chunks.
+
+        Raises:
+            ValueError: If `window_overlap` is greater than or equal to `window_size`.
+        """
+        if not chunks:
+            return []
+
+        sentences = [c.content for c in chunks if c.content]
+        chunk_map = {i: c for i, c in enumerate(chunks) if c.content}
+
+        if window_overlap >= window_size:
+            raise ValueError("window_overlap must be strictly less than window_size")
+
+        merged_entities: Dict[Tuple[str, str], Set[int]] = {}
+        step = max(1, window_size - window_overlap)
+
+        for i in range(0, len(sentences), step):
+            window = sentences[i : i + window_size]
+
+            if i > 0 and len(window) < window_overlap and len(sentences) > window_size:
+                continue
+
+            window_results = self._process_window(window, model, temperature)
+
+            for res in window_results:
+                key = (res["entity"], res["label"])
+                if key not in merged_entities:
+                    merged_entities[key] = set()
+
+                global_indices = {local_idx + i for local_idx in res["indices"]}
+                merged_entities[key].update(global_indices)
+
+            if i + window_size >= len(sentences):
+                break
+
+        final_payloads = []
+
+        for (name, label), indices_set in merged_entities.items():
+            child_chunks = []
+            for idx in sorted(list(indices_set)):
+                if idx in chunk_map:
+                    child_chunks.append(chunk_map[idx])
+
+            if child_chunks:
+                payload = EntityChunkPayload(
+                    entity=name, type=label, children=child_chunks, content=name
+                )
+                final_payloads.append(payload)
+
+        return final_payloads
+
+    def _process_window(
+        self, window_sentences: List[str], model: Optional[str], temperature: Optional[float]
+    ) -> List[Dict[str, Any]]:
+        """
+        Sends a specific window of sentences to the LLM for analysis and parses the result.
+        """
+        formatted_input = "\n".join([f"- {s}" for s in window_sentences])
+
+        system_prompt = (
+            "You are an advanced NLP linguist specialized in NER and Coreference Resolution. "
+            "Analyze the provided text in its ORIGINAL LANGUAGE. Do not translate entities or sentences.\n\n"
+            "Ontology:\n"
+            "- PER: People, fictional characters.\n"
+            "- ORG: Companies, institutions, agencies.\n"
+            "- LOC: Geopolitical entities, physical locations.\n"
+            "- MISC: Events, laws, products, works of art, nationalities.\n\n"
+            "Task:\n"
+            "Extract entities and group the EXACT sentences where they appear (including pronouns/references).\n\n"
+            "Instructions:\n"
+            "1. Return the EXACT text of the sentences from the input.\n"
+            "2. A sentence can belong to multiple entities (Overlap).\n"
+            "3. Resolve coreferences (e.g., 'He', 'The company')."
+        )
+
+        completion = self.backend.create_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": formatted_input},
+            ],
+            response_format=LLMEntityResponse,
+            model=model,
+            temperature=temperature,
+        )
+
+        results = []
+        if completion.choices[0].message.parsed:
+            for item in completion.choices[0].message.parsed.entities:
+                local_indices = self._map_sentences_to_indices(
+                    window_sentences, item.sentences
+                )
+
+                if local_indices:
+                    results.append(
+                        {
+                            "entity": item.entity,
+                            "label": item.label,
+                            "indices": local_indices,
+                        }
+                    )
+        return results
+
     def _map_sentences_to_indices(
         self, source_sentences: List[str], target_sentences: List[str]
     ) -> List[int]:
         """
-        Identifies the indices of sentences in the source list that match the target sentences.
-        Uses exact matching first, falling back to fuzzy matching for robustness against
-        minor LLM hallucinations or formatting changes.
+        Maps extracted sentences back to their indices in the source list using exact and fuzzy matching.
         """
         indices = set()
 
@@ -189,166 +392,24 @@ class LLMProvider(
 
         return sorted(list(indices))
 
-    def _process_window(
-        self, window_sentences: List[str], model: str, temperature: float
-    ) -> List[Dict[str, Any]]:
+
+class LLMSummaryProvider(SummaryProviderProtocol):
+    """
+    Provider specialized in generating summaries for text chunks using LLMs.
+    
+    This class implements the `SummaryProviderProtocol` and handles the summarization of 
+    multiple text chunks. It supports batching strategies to optimize API usage by grouping 
+    multiple texts into a single prompt when possible.
+    """
+
+    def __init__(self, backend: LLMBackend) -> None:
         """
-        Sends a window of text to the LLM for Named Entity Recognition and processes the response.
-        Returns a list of raw dictionaries containing the entity, label, and resolved local indices.
-        """
-        if not self.client:
-            raise ValueError(
-                "OpenAI Client not initialized. Please provide an API Key."
-            )
-
-        formatted_input = "\n".join([f"- {s}" for s in window_sentences])
-
-        system_prompt = (
-            "You are an advanced NLP linguist specialized in NER and Coreference Resolution. "
-            "Analyze the provided text in its ORIGINAL LANGUAGE. Do not translate entities or sentences.\n\n"
-            "Ontology:\n"
-            "- PER: People, fictional characters.\n"
-            "- ORG: Companies, institutions, agencies.\n"
-            "- LOC: Geopolitical entities, physical locations.\n"
-            "- MISC: Events, laws, products, works of art, nationalities.\n\n"
-            "Task:\n"
-            "Extract entities and group the EXACT sentences where they appear (including pronouns/references).\n\n"
-            "Instructions:\n"
-            "1. Return the EXACT text of the sentences from the input.\n"
-            "2. A sentence can belong to multiple entities (Overlap).\n"
-            "3. Resolve coreferences (e.g., 'He', 'The company')."
-        )
-
-        completion = self.client.beta.chat.completions.parse(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": formatted_input},
-            ],
-            response_format=LLMEntityResponse,
-            temperature=temperature,
-        )
-
-        results = []
-        if completion.choices[0].message.parsed:
-            for item in completion.choices[0].message.parsed.entities:
-                local_indices = self._map_sentences_to_indices(
-                    window_sentences, item.sentences
-                )
-
-                if local_indices:
-                    results.append(
-                        {
-                            "entity": item.entity,
-                            "label": item.label,
-                            "indices": local_indices,
-                        }
-                    )
-        return results
-
-    def extract_entities(
-        self,
-        chunks: List[ChunkPayload],
-        window_size: int = 20,
-        window_overlap: int = 5,
-        model: Optional[str] = None,
-        temperature: Optional[float] = None,
-        **kwargs: Any,
-    ) -> List[EntityChunkPayload]:
-        """
-        Orchestrates the Named Entity Recognition (NER) process over a sequence of text chunks.
-
-        This method implements a sliding window strategy to process large lists of chunks
-        while maintaining context continuity. It aggregates results from local windows
-        into a global set of unique entities, resolving their occurrences back to the
-        original physical chunks.
-
-        The process consists of three main stages:
-        1. **Pre-processing**: Extracts the raw text from the provided `ChunkPayload` objects
-           and creates a positional mapping to allow O(1) retrieval of original chunks by index.
-        2. **Sliding Window Execution**: Iterates through the text sentences in overlapping windows.
-           For each window, it calls the LLM via `_process_window` to extract entities and their
-           corresponding sentences. The overlap ensures that entities spanning across window
-           boundaries are correctly captured.
-        3. **Global Resolution**: Aggregates the local indices returned by the window processing
-           into global indices relative to the input list. It then reconstructs the final
-           `EntityChunkPayload` objects, populating their `children` field with the actual
-           `ChunkPayload` references where the entity was found.
+        Initializes the summary provider with a shared backend instance.
 
         Args:
-            chunks (List[ChunkPayload]): The list of physical text segments (e.g., sentences)
-                to be analyzed. Empty chunks are skipped.
-            window_size (int): The number of chunks to include in a single LLM prompt context.
-                Defaults to 20.
-            window_overlap (int): The number of chunks that overlap between consecutive windows
-                to preserve context. Must be strictly smaller than `window_size`. Defaults to 5.
-            model (Optional[str]): The identifier of the specific LLM model to use for this
-                operation. If not provided, the provider's default model is used.
-            temperature (Optional[float]): The sampling temperature for the model. Lower values
-                (e.g., 0.0) are recommended for extraction tasks to ensure determinism.
-                If not provided, the provider's default is used.
-            **kwargs: Additional keyword arguments passed to the underlying API call.
-
-        Returns:
-            List[EntityChunkPayload]: A list of unique entities found in the text. Each payload
-            contains the entity name, its type (label), and a list of references to the
-            original chunks (`children`) containing the evidence.
-
-        Raises:
-            ValueError: If `window_overlap` is greater than or equal to `window_size`.
+            backend: The configured LLMBackend instance used for API interactions.
         """
-        if not chunks:
-            return []
-
-        sentences = [c.content for c in chunks if c.content]
-        chunk_map = {i: c for i, c in enumerate(chunks) if c.content}
-
-        if window_overlap >= window_size:
-            raise ValueError("window_overlap must be strictly less than window_size")
-
-        active_model = model or self.default_model
-        active_temp = (
-            temperature if temperature is not None else self.default_temperature
-        )
-
-        merged_entities: Dict[Tuple[str, str], Set[int]] = {}
-
-        step = max(1, window_size - window_overlap)
-
-        for i in range(0, len(sentences), step):
-            window = sentences[i : i + window_size]
-
-            if i > 0 and len(window) < window_overlap and len(sentences) > window_size:
-                continue
-
-            window_results = self._process_window(window, active_model, active_temp)
-
-            for res in window_results:
-                key = (res["entity"], res["label"])
-                if key not in merged_entities:
-                    merged_entities[key] = set()
-
-                global_indices = {local_idx + i for local_idx in res["indices"]}
-                merged_entities[key].update(global_indices)
-
-            if i + window_size >= len(sentences):
-                break
-
-        final_payloads = []
-
-        for (name, label), indices_set in merged_entities.items():
-            child_chunks = []
-            for idx in sorted(list(indices_set)):
-                if idx in chunk_map:
-                    child_chunks.append(chunk_map[idx])
-
-            if child_chunks:
-                payload = EntityChunkPayload(
-                    entity=name, type=label, children=child_chunks, content=name
-                )
-                final_payloads.append(payload)
-
-        return final_payloads
+        self.backend = backend
 
     def summarize(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ChunkPayload]:
         """
@@ -394,9 +455,9 @@ class LLMProvider(
 
         return results
 
-    def _summarize_batch(self, batch_texts: List[str], **kwargs) -> List[str]:
+    def _summarize_batch(self, batch_texts: List[str], **kwargs: Any) -> List[str]:
         """
-        Internal helper to summarize multiple texts in one prompt.
+        Internal helper to summarize multiple texts in a single prompt execution.
         """
         results = [""] * len(batch_texts)
         
@@ -411,14 +472,16 @@ class LLMProvider(
             summaries: List[str]
 
         try:
-            completion = self.client.beta.chat.completions.parse(
-                model=kwargs.get("model", self.default_model),
+            # We override temperature to a low value for determinism in summaries unless specified
+            kwargs.setdefault("temperature", 0.2)
+            
+            completion = self.backend.create_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": formatted_targets}
                 ],
                 response_format=BatchSummaryResponse,
-                temperature=0.2,
+                **kwargs
             )
             
             if completion.choices[0].message.parsed:
@@ -426,16 +489,34 @@ class LLMProvider(
                 for i in range(min(len(returned_sums), len(results))):
                     results[i] = returned_sums[i]
                     
-        except Exception as e:
-            self.logger.error(f"Batch summary failed: {e}")
+        except Exception:
             pass
             
         return results
+
+
+class LLMTopicProvider(TopicProviderProtocol):
+    """
+    Provider specialized in topic classification and taxonomy discovery using LLMs.
     
+    This class implements the `TopicProviderProtocol`. It is responsible for identifying 
+    the main themes within a set of chunks. It can dynamically discover a taxonomy 
+    from the content or use a provided one, and then classify chunks into those topics.
+    """
+
+    def __init__(self, backend: LLMBackend) -> None:
+        """
+        Initializes the topic provider with a shared backend instance.
+
+        Args:
+            backend: The configured LLMBackend instance used for API interactions.
+        """
+        self.backend = backend
+
     def assign_topics(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[TopicChunkPayload]:
         """
         Extracts topics from the provided chunks and groups them semantically.
-        Implements the pivot logic: transforms a list of chunks with topics into
+        Implements a pivot logic: transforms a list of chunks with topics into
         a list of topics containing chunks.
         """
         if not chunks:
@@ -489,17 +570,19 @@ class LLMProvider(
         return final_payloads
 
     def _discover_taxonomy(self, texts: List[str], **kwargs: Any) -> List[str]:
-        """Generates a taxonomy from the text content."""
+        """
+        Generates a consolidated taxonomy from the provided text content using the LLM.
+        """
         batch_size = kwargs.get("taxonomy_batch_size", 10)
         all_raw_topics = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
             prompt = "Extract distinct key topics from the text. Output as list."
             try:
-                response = self.client.chat.completions.create(
-                    model=kwargs.get("model", self.default_model),
+                response = self.backend.create_chat_completion(
                     messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "\n".join(batch)}],
-                    temperature=0.3
+                    temperature=0.3,
+                    **kwargs
                 )
                 content = response.choices[0].message.content
                 if content:
@@ -509,10 +592,10 @@ class LLMProvider(
         
         unification_prompt = "Consolidate into a clean, deduplicated taxonomy."
         try:
-            completion = self.client.beta.chat.completions.parse(
-                model=kwargs.get("model", self.default_model),
+            completion = self.backend.create_completion(
                 messages=[{"role": "system", "content": unification_prompt}, {"role": "user", "content": "\n".join(all_raw_topics[:2000])}],
                 response_format=LLMTaxonomyResponse,
+                **kwargs
             )
             return completion.choices[0].message.parsed.topics
         except Exception:
@@ -520,7 +603,7 @@ class LLMProvider(
 
     def _classify_batch_topics(self, batch_texts: List[str], taxonomy: List[str], **kwargs: Any) -> Dict[int, List[str]]:
         """
-        Classifies a batch of texts against the taxonomy. 
+        Classifies a batch of texts against the provided taxonomy. 
         Returns a map of local_batch_index -> topics.
         """
         results = {}
@@ -528,11 +611,12 @@ class LLMProvider(
         prompt = f"Taxonomy: {taxonomy}\nAssign topics. Return 'anchor' (first 10 words) for matching."
         
         try:
-            completion = self.client.beta.chat.completions.parse(
-                model=kwargs.get("model", self.default_model),
+            kwargs.setdefault("temperature", 0.0)
+            
+            completion = self.backend.create_completion(
                 messages=[{"role": "system", "content": prompt}, {"role": "user", "content": formatted_batch}],
                 response_format=LLMTopicResponse,
-                temperature=0.0,
+                **kwargs
             )
             
             if completion.choices[0].message.parsed:
@@ -562,72 +646,34 @@ class LLMProvider(
                     if best_idx != -1 and best_score > 0.8:
                         results[best_idx] = asm.topics
 
-        except Exception as e:
-            self.logger.error(f"Error classifying topic batch: {e}")
+        except Exception:
+            pass
             
         return results
+
+
+class LLMContextualProvider(ContextualProviderProtocol):
+    """
+    Provider specialized in enriching text fragments with situational context using LLMs.
     
-    def _map_assignments_to_results(
-        self,
-        assignments: List[LLMTopicAssignment],
-        current_batch: List[str],
-        global_results: List[List[str]],
-        global_offset: int,
-    ) -> None:
+    This class implements the `ContextualProviderProtocol`. It analyzes chunks within their 
+    surrounding context (e.g., previous chunks or document background) to generate additive 
+    metadata that clarifies pronouns, location, and causality for isolated fragments.
+    """
+
+    def __init__(self, backend: LLMBackend) -> None:
         """
-        Resolves the mapping between LLM responses and original text chunks using Fuzzy Logic.
-
-        This helper method iterates through the assignments returned by the LLM
-        and attempts to locate the corresponding chunk in the 'current_batch'.
-        It employs a two-tier matching strategy:
-
-        1. Prefix Matching: Checks if the chunk starts with the anchor text (case-insensitive).
-           This covers the majority of cases where the LLM quotes accurately.
-
-        2. Fuzzy Similarity (Fallback): Uses 'difflib.SequenceMatcher' to compare
-           the anchor against the start of the chunk. This handles scenarios where
-           the LLM might have introduced minor typos, punctuation changes, or
-           spacing discrepancies in the anchor text.
-
-        If a match is found with a confidence score above 0.8, the topics are
-        assigned to the corresponding index in the 'global_results' list.
+        Initializes the contextual provider with a shared backend instance.
 
         Args:
-            assignments: The list of topic assignments returned by the LLM.
-            current_batch: The actual text strings of the current batch being processed.
-            global_results: The master list of results to be updated in-place.
-            global_offset: The starting index of the current batch in the global list.
+            backend: The configured LLMBackend instance used for API interactions.
         """
-        available_indices = set(range(len(current_batch)))
-
-        for asm in assignments:
-            best_idx = -1
-            best_score = 0.0
-
-            target_anchor = asm.anchor.strip().lower()
-
-            for idx in available_indices:
-                chunk_start = current_batch[idx][: len(asm.anchor) + 20].strip().lower()
-
-                if chunk_start.startswith(target_anchor):
-                    best_score = 1.0
-                    best_idx = idx
-                    break
-
-                matcher = difflib.SequenceMatcher(None, target_anchor, chunk_start)
-                score = matcher.quick_ratio()
-                if score > best_score:
-                    best_score = score
-                    best_idx = idx
-
-            if best_idx != -1 and best_score > 0.8:
-                global_index = global_offset + best_idx
-                global_results[global_index] = asm.topics
+        self.backend = backend
 
     def assign_context(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ContextualChunkPayload]:
         """
         Generates situational context for each chunk and wraps it in a ContextualChunkPayload.
-        Uses _generate_context_for_batch to handle the LLM interaction.
+        Uses batching to handle the LLM interaction efficiently.
         """
         if not chunks:
             return []
@@ -672,11 +718,11 @@ class LLMProvider(
         batch_texts: List[str], 
         all_texts: List[str], 
         offset: int, 
-        **kwargs
+        **kwargs: Any
     ) -> List[str]:
         """
-        New helper method: Encapsulates the logic of calling the LLM and matching
-        the returned quotes to the original text using your robust token overlap strategy.
+        Internal helper method that encapsulates the logic of calling the LLM and matching
+        the returned quotes to the original text using a robust token overlap strategy.
         """
         overlap_size = kwargs.get("overlap_size", 3)
         start_overlap = max(0, offset - overlap_size)
@@ -705,14 +751,15 @@ class LLMProvider(
         results = [""] * len(batch_texts)
 
         try:
-            completion = self.client.beta.chat.completions.parse(
-                model=kwargs.get("model", self.default_model),
+            kwargs.setdefault("temperature", 0.0)
+
+            completion = self.backend.create_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 response_format=LLMContextResponse,
-                temperature=0.0,
+                **kwargs
             )
 
             if completion.choices[0].message.parsed:
@@ -741,17 +788,36 @@ class LLMProvider(
                     if best_match_idx != -1 and max_overlap > 0:
                         results[best_match_idx] = assignment.context
 
-        except Exception as e:
-            self.logger.error(f"Context generation failed: {e}")
+        except Exception:
+            pass
             
         return results
+
+
+class LLMZettelProvider(ZettelProviderProtocol):
+    """
+    Provider specialized in extracting Zettels (Atomic Knowledge Units) from text using LLMs.
     
+    This class implements the `ZettelProviderProtocol`. It processes text chunks to identify 
+    atomic concepts, their hypotheses, tags, and evidence. It also attempts to link these 
+    concepts together into a cohesive graph structure based on the provided content.
+    """
+
+    def __init__(self, backend: LLMBackend) -> None:
+        """
+        Initializes the Zettel provider with a shared backend instance.
+
+        Args:
+            backend: The configured LLMBackend instance used for API interactions.
+        """
+        self.backend = backend
+
     def extract_zettels(
         self, chunks: List[ChunkPayload], batch_size: int = 5, **kwargs: Any
     ) -> List[ZettelChunkPayload]:
         """
-        Implements the ZettelProviderProtocol.extract_zettels method.
-        Processes chunks in batches with context propagation to generate interconnected Zettels.
+        Implements the logic to process chunks in batches with context propagation 
+        to generate interconnected Zettels.
         """
         if not chunks:
             return []
@@ -769,8 +835,7 @@ class LLMProvider(
                 system_prompt = self._build_zettel_system_prompt()
                 user_prompt = self._build_zettel_user_prompt(batch, previous_concepts)
 
-                completion = self.client.beta.chat.completions.parse(
-                    model=self.model,
+                completion = self.backend.create_completion(
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
@@ -804,10 +869,7 @@ class LLMProvider(
                         }
                     )
 
-            except Exception as e:
-                self.logger.error(
-                    f"Error processing Zettel batch {batch_index}: {str(e)}"
-                )
+            except Exception:
                 continue
 
         return self._finalize_zettel_graph(raw_extraction_results, global_handle_map)

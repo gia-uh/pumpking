@@ -3,7 +3,7 @@ from typing import List, Any
 from pumpking.strategies.advanced import SummaryChunking
 from pumpking.strategies.base import BaseStrategy
 from pumpking.models import ChunkPayload
-from pumpking.protocols import ExecutionContext
+from pumpking.protocols import ExecutionContext, SummaryProviderProtocol
 
 # --- Mocks ---
 
@@ -19,7 +19,7 @@ class MockSplitter(BaseStrategy):
             for p in parts
         ]
 
-class MockSummaryProvider:
+class MockSummaryProvider(SummaryProviderProtocol):
     """
     Simulates a sequential LLM provider.
     """
@@ -33,7 +33,7 @@ class MockAnnotator(BaseStrategy):
     def execute(self, data: str, context: ExecutionContext) -> str:
         return "annotated"
 
-# --- Complete Test Suite ---
+# --- Tests ---
 
 def test_summary_chunking_execution_flow():
     """
@@ -72,7 +72,8 @@ def test_summary_chunking_batch_input_handling():
 
 def test_summary_chunking_without_splitter():
     """
-    Verifies that if splitter is None, the strategy summarizes the whole input.
+    Verifies that if splitter is None, the strategy uses the default (AdaptiveChunking).
+    Since AdaptiveChunking is robust, for this small text it should return the whole text as one chunk.
     """
     text = "Whole Document"
     strategy = SummaryChunking(provider=MockSummaryProvider(), splitter=None)
@@ -91,7 +92,7 @@ def test_summary_chunking_content_raw_optimization():
     """
     text = "Atom"
     
-    class IdentityProvider:
+    class IdentityProvider(SummaryProviderProtocol):
         def summarize(self, text: str, **kwargs: Any) -> str:
             return text 
             

@@ -22,7 +22,6 @@ from pumpking.strategies.basic import (
     AdaptiveChunking,
     ParagraphChunking,
 )
-from pumpking.strategies.providers import LLMProvider
 from pumpking.utils import clean_text
 
 
@@ -134,7 +133,6 @@ class HierarchicalChunking(BaseStrategy):
         if not self.strategies:
             return []
 
-        # Currently applies only the primary strategy to the text body
         primary_strategy = self.strategies[0]
         return primary_strategy.execute(content, context)
 
@@ -149,37 +147,40 @@ class EntityBasedChunking(BaseStrategy):
     It adheres to the NERProviderProtocol and is designed to preserve the complex 
     lineage established by the provider, where an entity may be linked to multiple 
     source fragments.
+
+    Default Behavior:
+        If no splitter is provided, this strategy defaults to using 'SentenceChunking'.
+        This ensures that entities are detected within the context of individual sentences,
+        which is the standard granularity for most NER tasks.
     """
 
     def __init__(
         self, 
-        ner_provider: Any, 
-        splitter: Optional[Any] = None, 
+        ner_provider: NERProviderProtocol, 
+        splitter: Optional[BaseStrategy] = None, 
         provider_kwargs: Optional[dict] = None,
         strip_markdown: bool = False,
         collapse_whitespace: bool = True,
         **extra_kwargs: Any
     ):
         """
-        Initializes the entity strategy, supporting both instances and class types.
+        Initializes the entity strategy with a specific provider and optional splitter.
 
         Args:
-            ner_provider: An instance or class conforming to NERProviderProtocol.
-            splitter: An optional instance or class for content decomposition.
+            ner_provider: An instance conforming to NERProviderProtocol.
+            splitter: An optional strategy for content decomposition. If None,
+                'SentenceChunking' is instantiated and used by default.
             provider_kwargs: Configuration for the NER provider.
             strip_markdown: Flag to remove markdown during text cleaning.
             collapse_whitespace: Flag to unify whitespace characters.
             **extra_kwargs: Captured for provider configuration compatibility.
         """
-        if isinstance(ner_provider, type):
-            self.ner_provider = ner_provider()
-        else:
-            self.ner_provider = ner_provider
+        self.ner_provider = ner_provider
 
-        if isinstance(splitter, type):
-            self.splitter = splitter()
-        else:
+        if splitter:
             self.splitter = splitter
+        else:
+            self.splitter = SentenceChunking()
 
         self.provider_kwargs = provider_kwargs or {}
         self.provider_kwargs.update(extra_kwargs)
@@ -230,8 +231,6 @@ class EntityBasedChunking(BaseStrategy):
                 **self.provider_kwargs
             )
 
-            # Do not overwrite ep.children here. 
-            # The provider is responsible for linking entities to their evidence chunks.
             final_results.extend(entity_payloads)
 
         return final_results
@@ -241,18 +240,24 @@ class SummaryChunking(BaseStrategy):
     """
     An advanced compound strategy that generates summaries for content units.
 
-    This strategy orchestrates a two-stage process: first, it optionally decomposes 
-    large input chunks into smaller semantic units using a splitter; then, it 
-    leverages an LLM provider to summarize each resulting unit.
+    This strategy orchestrates a two-stage process: first, it decomposes large input 
+    chunks into smaller semantic units using a splitter; then, it leverages an LLM 
+    provider to summarize each resulting unit.
 
-    It exposes configuration flags for the internal 'clean_text' utility, 
-    allowing control over whitespace collapsing and markdown stripping. 
-    Annotators are applied only to the final summarized output.
+    Default Behavior:
+        If no splitter is provided, this strategy defaults to using 'AdaptiveChunking'
+        configured with common values (min_chunk_size=1000, max_chunk_size=3000).
+        This default ensures that the text is grouped into semantically coherent blocks 
+        of sufficient size for meaningful summarization, rather than summarizing individual 
+        sentences or arbitrary fragments. 
+        
+        If a user requires different sizing parameters, they should explicitly instantiate 
+        and pass their own 'AdaptiveChunking' (or other strategy) instance to the constructor.
     """
 
     def __init__(
         self, 
-        provider: Any, 
+        provider: SummaryProviderProtocol, 
         splitter: Optional[BaseStrategy] = None, 
         provider_kwargs: Optional[dict] = None,
         strip_markdown: bool = False,
@@ -264,13 +269,20 @@ class SummaryChunking(BaseStrategy):
 
         Args:
             provider: The LLM provider instance for summarization.
-            splitter: An optional strategy for internal decomposition.
+            splitter: An optional strategy for internal decomposition. If None,
+                defaults to 'AdaptiveChunking(1000, 3000)'. To use custom chunk sizes,
+                pass a pre-configured AdaptiveChunking instance here.
             provider_kwargs: Configuration for the summarization provider.
             strip_markdown: Whether to remove markdown formatting during cleaning.
             collapse_whitespace: Whether to collapse multiple whitespaces into one.
         """
         self.provider = provider
-        self.splitter = splitter
+        
+        if splitter:
+            self.splitter = splitter
+        else:
+            self.splitter = AdaptiveChunking(min_chunk_size=1000, max_chunk_size=3000)
+
         self.provider_kwargs = provider_kwargs or {}
         self.strip_markdown = strip_markdown
         self.collapse_whitespace = collapse_whitespace
@@ -351,11 +363,16 @@ class TopicBasedChunking(BaseStrategy):
     4. It establishes lineage by linking the resulting TopicChunkPayloads to the 
        atomic units that originated them.
     5. It applies late-stage annotations to the generated topic nodes.
+
+    Default Behavior:
+        If no splitter is provided, this strategy defaults to using 'ParagraphChunking'.
+        This assumes that paragraphs are the most natural unit of thought for detecting
+        distinct topics in a document.
     """
 
     def __init__(
         self, 
-        topic_provider: Any, 
+        topic_provider: TopicProviderProtocol, 
         splitter: Optional[BaseStrategy] = None, 
         provider_kwargs: Optional[dict] = None,
         strip_markdown: bool = False,
@@ -366,13 +383,19 @@ class TopicBasedChunking(BaseStrategy):
 
         Args:
             topic_provider: Object complying with TopicProviderProtocol.
-            splitter: Optional strategy for internal content decomposition.
+            splitter: Optional strategy for internal content decomposition. If None,
+                defaults to 'ParagraphChunking'.
             provider_kwargs: Configuration for the topic provider's method.
             strip_markdown: Flag to remove markdown during text cleaning.
             collapse_whitespace: Flag to unify whitespace characters.
         """
         self.topic_provider = topic_provider
-        self.splitter = splitter
+        
+        if splitter:
+            self.splitter = splitter
+        else:
+            self.splitter = ParagraphChunking()
+
         self.provider_kwargs = provider_kwargs or {}
         self.strip_markdown = strip_markdown
         self.collapse_whitespace = collapse_whitespace
@@ -441,15 +464,19 @@ class ContextualChunking(BaseStrategy):
     strict architectural guidelines, annotations are applied exclusively to the 
     original source fragments and never to the generated context metadata.
 
-    The strategy is fully compliant with the ContextualProviderProtocol, utilizing 
-    the 'assign_context' method to interface with providers. It ensures that 
-    the situational context remains a pure metadata field, while the source 
-    content carries the enrichment from the pipeline's annotators.
+    Default Behavior:
+        If no splitter is provided, this strategy defaults to using 'AdaptiveChunking'
+        configured with common values (min_chunk_size=1000, max_chunk_size=3000).
+        This default assumes that contextual enrichment is most effective when applied
+        to substantial, coherent blocks of text rather than tiny fragments. 
+        
+        Users desiring different chunk sizes must provide their own pre-configured 
+        'AdaptiveChunking' instance.
     """
 
     def __init__(
         self, 
-        provider: Any, 
+        provider: ContextualProviderProtocol, 
         splitter: Optional[BaseStrategy] = None, 
         provider_kwargs: Optional[dict] = None,
         strip_markdown: bool = False,
@@ -461,14 +488,20 @@ class ContextualChunking(BaseStrategy):
 
         Args:
             provider: An object conforming to ContextualProviderProtocol.
-            splitter: An optional internal strategy for content decomposition.
+            splitter: An optional internal strategy for content decomposition. If None,
+                defaults to 'AdaptiveChunking(1000, 3000)'.
             provider_kwargs: Configuration for the contextual provider.
             strip_markdown: Flag to remove markdown during text cleaning.
             collapse_whitespace: Flag to unify whitespace characters.
             **extra_kwargs: Captured for provider configuration compatibility.
         """
         self.provider = provider
-        self.splitter = splitter
+        
+        if splitter:
+            self.splitter = splitter
+        else:
+            self.splitter = AdaptiveChunking(min_chunk_size=1000, max_chunk_size=3000)
+
         self.provider_kwargs = provider_kwargs or {}
         self.provider_kwargs.update(extra_kwargs)
         self.strip_markdown = strip_markdown
@@ -499,7 +532,6 @@ class ContextualChunking(BaseStrategy):
         elif isinstance(data, ChunkPayload):
             inputs = [data]
         else:
-            # We don't clean yet to let the splitter see original structure (\n\n, etc.)
             inputs = [ChunkPayload(content=data, content_raw=data)]
 
         final_results: List[ContextualChunkPayload] = []
@@ -507,13 +539,10 @@ class ContextualChunking(BaseStrategy):
         for source in inputs:
             units: List[ChunkPayload] = []
             if self.splitter:
-                # The splitter handles annotation of the fragments internally
                 units = self.splitter.execute(source.content, context)
             else:
-                # If no splitter, annotate the source once here
                 units = [self._apply_annotators_to_payload(source.content, context)]
 
-            # Clean content of units using the project's utility flags
             for unit in units:
                 unit.content = clean_text(
                     unit.content,
@@ -521,7 +550,6 @@ class ContextualChunking(BaseStrategy):
                     collapse_whitespace=self.collapse_whitespace
                 )
 
-            # Provider generates the 'context' field based on the annotated units
             contextual_payloads = self.provider.assign_context(
                 units, 
                 **self.provider_kwargs
@@ -543,15 +571,16 @@ class ZettelkastenChunking(BaseStrategy):
     to the original source fragments (evidence) and never to the synthesized 
     hypothesis produced by the provider.
 
-    The strategy is fully compliant with the ZettelProviderProtocol, interfacing 
-    via the 'extract_zettels' method. It handles both provider instances and 
-    class types for flexible instantiation.
+    Default Behavior:
+        If no splitter is provided, this strategy defaults to using 'ParagraphChunking'.
+        The Zettelkasten method traditionally operates on discrete ideas which often
+        map well to paragraph boundaries.
     """
 
     def __init__(
         self, 
-        zettel_provider: Optional[Any] = None, 
-        splitter: Optional[Any] = None, 
+        zettel_provider: ZettelProviderProtocol, 
+        splitter: Optional[BaseStrategy] = None, 
         provider_kwargs: Optional[dict] = None,
         strip_markdown: bool = False,
         collapse_whitespace: bool = True,
@@ -562,24 +591,19 @@ class ZettelkastenChunking(BaseStrategy):
 
         Args:
             zettel_provider: The primary provider for zettel extraction.
-            splitter: An optional strategy for initial content decomposition.
+            splitter: An optional strategy for initial content decomposition. If None,
+                defaults to 'ParagraphChunking'.
             provider_kwargs: Configuration for the Zettel provider.
             strip_markdown: Flag to remove markdown during text cleaning.
             collapse_whitespace: Flag to unify whitespace characters.
             **extra_kwargs: Captured for provider configuration compatibility.
         """
-        self.zettel_provider = zettel_provider or extra_kwargs.get("provider")
-        
-        if not self.zettel_provider:
-            raise TypeError("ZettelkastenChunking.__init__() missing 1 required positional argument: 'zettel_provider'")
-
-        if isinstance(self.zettel_provider, type):
-            self.zettel_provider = self.zettel_provider()
+        self.zettel_provider = zettel_provider
             
-        if isinstance(splitter, type):
-            self.splitter = splitter()
-        else:
+        if splitter:
             self.splitter = splitter
+        else:
+            self.splitter = ParagraphChunking()
 
         self.provider_kwargs = provider_kwargs or {}
         self.provider_kwargs.update({k: v for k, v in extra_kwargs.items() if k != "provider"})
