@@ -1,7 +1,9 @@
 import re
-from io import StringIO
-from html.parser import HTMLParser
 import markdown
+from io import StringIO, IOBase
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Tuple, Optional, Union
 
 class _MLStripper(HTMLParser):
     """
@@ -117,3 +119,70 @@ def _strip_markdown_formatting(text: str) -> str:
     s = _MLStripper()
     s.feed(html)
     return s.get_data()
+
+def resolve_source_content(
+    source: Union[str, Path, IOBase],
+    filename: Optional[str] = None
+) -> Tuple[str, Optional[str]]:
+    """
+    Resolves and ingests raw document content from various input sources.
+
+    This utility function abstracts the complexity of reading data from different
+    origins, such as file paths, open file objects, or direct string content.
+    It ensures that the pipeline receives a normalized string of text content
+    and a determined filename metadata, regardless of how the input was provided.
+
+    The resolution logic prioritizes explicit arguments but falls back to
+    introspection when necessary:
+    1. If an explicit 'filename' is provided, it always takes precedence over
+       any name inferred from the source.
+    2. If the source is a pathlib.Path, the content is read from the file,
+       and the filename is inferred from the path if not already provided.
+    3. If the source is a file-like object (IOBase), the content is read from
+       the stream. The function attempts to extract the name attribute from
+       the object if the filename is not provided.
+    4. If the source is a raw string, it is treated as the content itself.
+
+    Args:
+        source: The input data, which can be a direct string, a file path,
+                or a file-like object.
+        filename: An optional explicit override for the document's name.
+
+    Returns:
+        A tuple containing the normalized text content and the resolved filename
+        (or None if no filename could be determined).
+
+    Raises:
+        ValueError: If a file path does not exist or if a file-like object
+                    is not readable.
+    """
+    final_filename = filename
+    content = ""
+
+    if isinstance(source, Path):
+        if not source.exists():
+            raise ValueError(f"File path does not exist: {source}")
+        
+        content = source.read_text(encoding="utf-8")
+        if not final_filename:
+            final_filename = source.name
+
+    elif isinstance(source, IOBase):
+        if not hasattr(source, "read"):
+             raise ValueError("Provided file object is not readable.")
+        
+        read_data = source.read()
+        if isinstance(read_data, bytes):
+            content = read_data.decode("utf-8")
+        else:
+            content = str(read_data)
+            
+        if not final_filename and hasattr(source, "name"):
+            name_attr = getattr(source, "name")
+            if name_attr and name_attr != "<stdin>":
+                final_filename = str(name_attr)
+
+    else:
+        content = str(source)
+
+    return content, final_filename

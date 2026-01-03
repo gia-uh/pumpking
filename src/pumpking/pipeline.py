@@ -14,6 +14,7 @@ from typing import (
 from pumpking.models import ChunkNode, DocumentRoot, ChunkPayload
 from pumpking.protocols import ExecutionContext, StrategyProtocol
 from pumpking.exceptions import PipelineConfigurationError
+from pumpking.utils import resolve_source_content
 
 class Step:
     """
@@ -339,28 +340,36 @@ class PumpkingPipeline:
 
     def run(
         self, 
-        input_data: Union[str, DocumentRoot], 
+        input_data: Union[str, DocumentRoot, Any], 
         filename: Optional[str] = None
     ) -> DocumentRoot:
         """
         Executes the pipeline on the given input data.
 
-        This method initializes the execution context and processes the document 
-        layer by layer (frontier execution). At each stage, it identifies the 
-        current active nodes and passes them to the next step(s) in the topology.
+        This method serves as the universal entry point for document processing.
+        It abstracts the complexity of input ingestion by leveraging utility functions
+        to handle various data sources (file paths, file objects, raw strings) and
+        normalizes them into a consistent DocumentRoot structure.
+
+        Once the root is established, it initializes the execution context and
+        processes the document layer by layer (frontier execution), passing active
+        nodes through the configured topology steps.
 
         Args:
-            input_data: The raw document string or a pre-initialized DocumentRoot.
-            filename: Optional filename metadata to attach if creating a new root.
+            input_data: The input source. Can be a raw string, a pathlib.Path, 
+                        an open file object, or a pre-existing DocumentRoot.
+            filename: An optional explicit filename to associate with the document.
+                      If provided, it overrides any filename inferred from the input source.
 
         Returns:
             The fully processed DocumentRoot containing the complete graph of 
             ChunkNodes and results.
         """
-        if isinstance(input_data, str):
-            root = DocumentRoot(document=input_data, original_filename=filename)
-        else:
+        if isinstance(input_data, DocumentRoot):
             root = input_data
+        else:
+            content, resolved_filename = resolve_source_content(input_data, filename)
+            root = DocumentRoot(document=content, original_filename=resolved_filename)
 
         current_context = ExecutionContext()
         current_frontier: List[Union[DocumentRoot, ChunkNode]] = [root]
