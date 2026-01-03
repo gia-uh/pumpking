@@ -17,21 +17,35 @@ from pumpking.exceptions import PipelineConfigurationError
 
 class Step:
     """
-    Represents an atomic processing stage within the document graph.
+    Represents an atomic processing stage within the document execution graph.
 
-    This class encapsulates a specific processing strategy and manages the flow
-    of data between graph nodes. Crucially, it acts as an intelligent dispatcher
-    that adapts its execution mode based on the capabilities of the underlying
-    strategy.
+    This class serves as a smart wrapper around a specific processing strategy. 
+    Its primary responsibility is to manage the flow of data between graph nodes, 
+    acting as an intelligent dispatcher that adapts its execution mode based on 
+    the capabilities of the underlying strategy.
 
-    By inspecting the type signatures of the strategy at runtime, this class
-    decides whether to process input items sequentially (Iterative/FlatMap) or
-    to pass them as a comprehensive group (Batching). This enables optimization
-    opportunities, such as reducing LLM API calls, without imposing complexity
-    on the pipeline configuration.
+    Key capabilities include:
+    1. Runtime Introspection: It inspects the type signatures of the strategy's 
+       'execute' method to determine if it supports batch processing (List input) 
+       or requires iterative processing (single item input).
+    2. Execution Mode Adaptation: Based on introspection, it automatically switches 
+       between 'Batch Mode' (passing all inputs at once for optimization, e.g., 
+       LLM API calls) and 'Iterative Mode' (processing items one by one).
+    3. Graph Construction: It handles the creation of new ChunkNodes from the 
+       strategy's results and attaches them to the correct parent nodes in the 
+       document tree, maintaining structural integrity.
     """
-
+    
     def __init__(self, strategy: StrategyProtocol, alias: Optional[str] = None) -> None:
+        """
+        Initializes the pipeline step.
+
+        Args:
+            strategy: The processing strategy instance to be executed.
+            alias: A unique identifier for this step. If not provided, it defaults 
+                   to the strategy's class name. This alias is used for tagging 
+                   results and configuring annotators.
+        """
         self.strategy = strategy
         self.alias = alias or strategy.__class__.__name__
         self.annotators: Dict[str, StrategyProtocol] = {}
@@ -42,32 +56,27 @@ class Step:
         context: ExecutionContext
     ) -> List[ChunkNode]:
         """
-        Executes the strategy logic across the provided frontier of nodes.
+        Executes the strategy logic across the provided frontier of input nodes.
 
-        This method serves as the main entry point for data processing in this step.
-        It aggregates data from input nodes and dispatches it to the strategy.
-
-        Two execution modes are supported:
-        1. Batch Mode: If the strategy accepts a List, all data is passed at once.
-           Lineage (Parent-Child relationship) MUST be preserved by the strategy
-           setting the 'children' field in the result payloads.
-        2. Iterative Mode: If the strategy accepts single items, the pipeline
-           iterates through inputs, calls the strategy for each, and manually
-           assigns the parent ID based on the input node being processed.
+        This method acts as the main entry point for data processing within this step. 
+        It aggregates data from the input nodes, sets up the execution context with 
+        local annotators, and dispatches the data to the underlying strategy using 
+        the appropriate execution mode.
 
         Args:
-            input_nodes: The list of nodes from the previous step (or the root).
-            context: The shared execution context for the pipeline.
+            input_nodes: The list of nodes from the previous step (or the document root) 
+                         that contain the input data for this strategy.
+            context: The shared execution environment containing runtime dependencies 
+                     and global state.
 
         Returns:
-            A list of newly created ChunkNodes resulting from the execution.
+            A list of newly created ChunkNodes resulting from the execution. These 
+            nodes represent the next frontier in the processing graph.
         """
         new_nodes = []
         
-        # Tuple of (Data Item, Parent Node ID)
         inputs_with_parents = []
         
-        # 1. Extract Data and Map Lineage
         for node in input_nodes:
             p_id = node.id
             if isinstance(node, DocumentRoot):
@@ -81,7 +90,6 @@ class Step:
 
         context.annotators = self.annotators
 
-        # 2. Dispatch Execution based on Strategy Capabilities
         if self._supports_batch_input(self.strategy):
             new_nodes = self._execute_batch(inputs_with_parents, input_nodes, context)
         else:
@@ -96,8 +104,16 @@ class Step:
         context: ExecutionContext
     ) -> List[ChunkNode]:
         """
-        Handles strategies that support batch processing (List input).
-        Rely on 'children' field in payloads to resolve parents.
+        Handles the execution of strategies that support batch processing.
+
+        In this mode, all input items are aggregated into a single list and passed 
+        to the strategy. This is particularly efficient for strategies that can 
+        parallelize work or optimize bulk operations (like vectorized embeddings 
+        or LLM calls).
+
+        Critically, this method relies on the strategy returning payloads that 
+        correctly populate their 'children' field. This field is used to map 
+        the result back to its specific parent node using the lineage map.
         """
         all_inputs = [item for item, _ in inputs_with_parents]
         lineage_map = {
@@ -127,8 +143,12 @@ class Step:
         context: ExecutionContext
     ) -> List[ChunkNode]:
         """
-        Handles strategies that process items one by one.
-        Manually tracks parent ID from the input loop.
+        Handles the execution of strategies that process items sequentially.
+
+        In this mode, the pipeline iterates through each input item, calls the 
+        strategy, and immediately creates the resulting nodes. Parent lineage 
+        is explicitly tracked via the loop variable, making this method robust 
+        for simple strategies that do not maintain internal lineage history.
         """
         new_nodes = []
         for item, p_id in inputs_with_parents:
@@ -152,7 +172,10 @@ class Step:
         parent_id: Optional[uuid.UUID], 
         origin_nodes: List[Union[DocumentRoot, ChunkNode]]
     ) -> None:
-        """Helper to find the parent node object and append the child."""
+        """
+        Attaches a newly created child node to its corresponding parent node within 
+        the origin nodes list. This builds the actual graph structure in memory.
+        """
         if parent_id is None:
             return
         for origin in origin_nodes:
@@ -162,8 +185,11 @@ class Step:
 
     def _supports_batch_input(self, strategy: StrategyProtocol) -> bool:
         """
-        Determines if the strategy's execute method accepts a List as input.
-        inspects parameters robustly, ignoring 'self' and 'context'.
+        Introspects the strategy's 'execute' method to determine if it accepts a list input.
+
+        This method analyzes the type hints of the strategy's arguments (excluding 
+        'self' and 'context'). It robustly handles complex type definitions, including 
+        unions and generics, to determine if 'List' is a valid input type.
         """
         try:
             sig = inspect.signature(strategy.execute)
@@ -183,7 +209,8 @@ class Step:
 
     def _type_allows_list(self, type_hint: Any) -> bool:
         """
-        Recursively checks if a type hint implies support for List input.
+        Recursively checks if a given type hint is or contains a List type.
+        Supports standard List, typing.List, and Union types.
         """
         if type_hint is Any:
             return True
@@ -206,7 +233,11 @@ class Step:
         lineage_map: Dict[uuid.UUID, uuid.UUID]
     ) -> Optional[uuid.UUID]:
         """
-        Identifies the parent node ID for a given result payload based on lineage.
+        Resolves the parent node ID for a given payload by examining its lineage.
+
+        This method looks at the payload's 'children' (which represent the source 
+        data) and maps the first child's ID back to the parent node ID using 
+        the lineage map created before batch execution.
         """
         if payload.children:
             primary_source = payload.children[0]
@@ -215,7 +246,13 @@ class Step:
         return None
 
     def _get_node_class(self, payloads: List[ChunkPayload]) -> Type[ChunkNode]:
-        """Dynamically identifies the appropriate ChunkNode subclass."""
+        """
+        Dynamically determines the specialized ChunkNode subclass to use for a result.
+
+        This allows strategies to define custom node types (via a '__node_class__' 
+        attribute on the payload) if they require storage logic beyond the 
+        standard ChunkNode.
+        """
         if payloads and hasattr(payloads[0], "__node_class__"):
             return getattr(payloads[0], "__node_class__")
         return ChunkNode
@@ -225,7 +262,13 @@ class Step:
         payloads: List[ChunkPayload], 
         parent_id: Optional[uuid.UUID] = None
     ) -> ChunkNode:
-        """Instantiates a node and maps specialized attributes from the payload."""
+        """
+        Instantiates a new node containing the processed payloads.
+
+        This method handles the transfer of data from the temporary processing 
+        payloads into the persistent graph node structure, ensuring that metadata 
+        fields match the definition of the target node class.
+        """
         node_class = self._get_node_class(payloads)
         node_data = {
             "parent_id": parent_id,
@@ -242,15 +285,18 @@ class Step:
 
     def __rshift__(self, next_val: Union['Step', List[Any]]) -> 'PumpkingPipeline':
         """
-        Defines sequential topology. 
-        Returns a list structure [self, next] to be parsed by the Pipeline.
+        Overloads the '>>' operator to define a sequential topology.
+        Returns a list representing the sequence [current_step, next_step_or_list].
         """
         return [self, next_val]
 
     def __or__(self, annotator_step: 'Step') -> 'Step':
         """
-        Attaches a local annotator to this step.
-        Raises PipelineConfigurationError if the alias is already in use.
+        Overloads the '|' operator to attach an annotator strategy to this step.
+        The annotated strategy will run within the context of this step's execution.
+
+        Raises:
+            PipelineConfigurationError: If an annotator with the same alias already exists.
         """
         if annotator_step.alias in self.annotators:
             raise PipelineConfigurationError(f"Duplicate annotator alias '{annotator_step.alias}'")
@@ -260,13 +306,28 @@ class Step:
 
 class PumpkingPipeline:
     """
-    Orchestrates the execution flow (Sequential & Parallel).
+    Orchestrates the end-to-end execution of document processing tasks.
+
+    This class interprets the topology defined by Step objects (including sequential 
+    chains and parallel branches) and manages the lifecycle of the execution frontier. 
+    It maintains the flow of data from the document root through all configured steps 
+    until completion.
     """
 
     def __init__(self, structure: Union[Step, List[Any]]) -> None:
+        """
+        Initializes the pipeline with a defined structure.
+
+        Args:
+            structure: The topology of the pipeline, which can be a single Step 
+                       or a list of Steps (and nested lists for branching).
+        """
         self.steps = self._initialize_topology(structure)
 
     def _initialize_topology(self, structure: Any) -> List[Any]:
+        """
+        Normalizes the input structure into a flat list of executable steps.
+        """
         if isinstance(structure, Step):
             return [structure]
         
@@ -282,7 +343,19 @@ class PumpkingPipeline:
         filename: Optional[str] = None
     ) -> DocumentRoot:
         """
-        Main execution loop.
+        Executes the pipeline on the given input data.
+
+        This method initializes the execution context and processes the document 
+        layer by layer (frontier execution). At each stage, it identifies the 
+        current active nodes and passes them to the next step(s) in the topology.
+
+        Args:
+            input_data: The raw document string or a pre-initialized DocumentRoot.
+            filename: Optional filename metadata to attach if creating a new root.
+
+        Returns:
+            The fully processed DocumentRoot containing the complete graph of 
+            ChunkNodes and results.
         """
         if isinstance(input_data, str):
             root = DocumentRoot(document=input_data, original_filename=filename)
@@ -296,11 +369,9 @@ class PumpkingPipeline:
             next_frontier = []
             
             if isinstance(step_item, list):
-                # Parallel branches
                 for sub_step in step_item:
                     next_frontier.extend(sub_step.execute(current_frontier, current_context))
             else:
-                # Sequential step
                 next_frontier.extend(step_item.execute(current_frontier, current_context))
             
             current_frontier = next_frontier
@@ -309,8 +380,17 @@ class PumpkingPipeline:
 
     def __rshift__(self, next_val: Union[Step, List[Any]]) -> 'PumpkingPipeline':
         """
-        Allows appending steps to an instantiated pipeline.
-        Enables the syntax: PumpkingPipeline(...) >> step
+        Allows appending steps to an already instantiated pipeline object using 
+        the '>>' operator.
+
+        Args:
+            next_val: A Step or list of Steps to append to the execution sequence.
+
+        Returns:
+            The pipeline instance itself, allowing for fluent chaining.
+
+        Raises:
+            PipelineConfigurationError: If the appended value has an invalid type.
         """
         if isinstance(next_val, Step):
             self.steps.append(next_val)
@@ -322,5 +402,17 @@ class PumpkingPipeline:
 
 
 def annotate(strategy: Any, alias: str) -> Step:
-    """Helper to create annotation steps."""
+    """
+    Factory function to create a Step configured specifically for annotation.
+
+    This helper simplifies the syntax for defining annotators that are attached 
+    to other steps using the '|' operator.
+
+    Args:
+        strategy: The strategy logic to be used for annotation.
+        alias: The name under which the annotation results will be stored.
+
+    Returns:
+        A new Step instance wrapping the strategy.
+    """
     return Step(strategy, alias=alias)
