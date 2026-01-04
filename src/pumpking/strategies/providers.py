@@ -115,8 +115,8 @@ class LLMBackend:
 
     def __init__(
         self,
+        base_url: str,
         api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
         default_model: str = "gpt-4o",
         default_temperature: float = 0.0,
     ) -> None:
