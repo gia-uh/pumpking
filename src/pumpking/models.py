@@ -124,9 +124,9 @@ class ChunkNode(PumpkingBaseModel):
     It persists the hierarchy of how data was processed, linking inputs to outputs.
     """
 
+    strategy_label: str
     id: uuid.UUID = Field(default_factory=uuid.uuid4)
     parent_id: Optional[uuid.UUID] = None
-    strategy_label: Optional[str] = None
     results: List[ChunkPayload] = Field(default_factory=list)
     branches: List["ChunkNode"] = Field(default_factory=list)
 
