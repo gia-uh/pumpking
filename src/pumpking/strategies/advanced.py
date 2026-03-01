@@ -25,127 +25,106 @@ from pumpking.strategies.basic import (
 from pumpking.utils import clean_text
 
 
-class _SectionNode:
-    """
-    Internal data structure used to represent a logical section within a document's hierarchy.
+# class _SectionNode:
+#     """
+#     Internal data structure used to represent a logical section within a document's hierarchy.
 
-    This node acts as a container for a specific document section, holding metadata
-    such as the header level (depth) and title, as well as accumulating the raw text
-    content associated with that section. It supports a recursive structure where
-    each node can maintain a list of child nodes (subsections), enabling the
-    construction of a complete document tree.
-    """
+#     This node acts as a container for a specific document section, holding metadata
+#     such as the header level (depth) and title, as well as accumulating the raw text
+#     content associated with that section. It supports a recursive structure where
+#     each node can maintain a list of child nodes (subsections), enabling the
+#     construction of a complete document tree.
+#     """
 
-    def __init__(self, level: int, title: str = "") -> None:
-        """
-        Initializes a new section node.
+#     def __init__(self, level: int, title: str = "") -> None:
+#         """
+#         Initializes a new section node.
 
-        Args:
-            level: The hierarchical depth of the section (e.g., 1 for H1, 2 for H2).
-                   Level 0 is typically reserved for the document root.
-            title: The extracted text of the header defining this section.
-        """
-        self.level = level
-        self.title = title
-        self.content_buffer: List[str] = []
-        self.children: List["_SectionNode"] = []
+#         Args:
+#             level: The hierarchical depth of the section (e.g., 1 for H1, 2 for H2).
+#                    Level 0 is typically reserved for the document root.
+#             title: The extracted text of the header defining this section.
+#         """
+#         self.level = level
+#         self.title = title
+#         self.content_buffer: List[str] = []
+#         self.children: List["_SectionNode"] = []
 
-    def get_text_content(self) -> str:
-        """
-        Retrieves the aggregated text content of this section.
+#     def get_text_content(self) -> str:
+#         """
+#         Retrieves the aggregated text content of this section.
 
-        Returns:
-            The combined string of all text data accumulated in the content buffer.
-        """
-        return "".join(self.content_buffer)
+#         Returns:
+#             The combined string of all text data accumulated in the content buffer.
+#         """
+#         return "".join(self.content_buffer)
 
 
-class _MarkdownStructureParser(HTMLParser):
-    """
-    A specialized HTML parser designed to reconstruct a document's hierarchy from
-    rendered Markdown.
+# class _MarkdownStructureParser(HTMLParser):
+#     """
+#     A specialized HTML parser designed to reconstruct a document's hierarchy from
+#     rendered Markdown.
 
-    This class parses the HTML output of a Markdown converter to build a tree of
-    _SectionNodes. It tracks the depth of headers (H1-H6) to manage the nesting
-    of sections on a stack. Content found between headers is attributed to the
-    currently active section on the top of the stack.
-    """
+#     This class parses the HTML output of a Markdown converter to build a tree of
+#     _SectionNodes. It tracks the depth of headers (H1-H6) to manage the nesting
+#     of sections on a stack. Content found between headers is attributed to the
+#     currently active section on the top of the stack.
+#     """
     
-    def __init__(self) -> None:
-        """
-        Initializes the parser state.
+#     def __init__(self) -> None:
+#         """
+#         Initializes the parser state.
 
-        Sets up the root node (level 0) and initializes the stack with the root
-        as the active context. The 'in_header' flag tracks whether the parser
-        is currently processing a header tag to capture titles correctly.
-        """
-        super().__init__()
-        self.root = _SectionNode(level=0)
-        self.stack: List[_SectionNode] = [self.root]
-        self.in_header = False
+#         Sets up the root node (level 0) and initializes the stack with the root
+#         as the active context. The 'in_header' flag tracks whether the parser
+#         is currently processing a header tag to capture titles correctly.
+#         """
+#         super().__init__()
+#         self.root = _SectionNode(level=0)
+#         self.stack: List[_SectionNode] = [self.root]
+#         self.in_header = False
 
-    def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
-        """
-        Handles the opening of HTML tags to detect structure.
+#     def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+#         """
+#         Handles the opening of HTML tags to detect structure.
 
-        When a header tag (h1-h6) is encountered, the stack is unwound until the
-        current level is less than the new header's level, ensuring correct nesting.
-        A new _SectionNode is then created and pushed onto the stack.
+#         When a header tag (h1-h6) is encountered, the stack is unwound until the
+#         current level is less than the new header's level, ensuring correct nesting.
+#         A new _SectionNode is then created and pushed onto the stack.
 
-        Args:
-            tag: The name of the tag (e.g., 'h1', 'p', 'div').
-            attrs: A list of (name, value) pairs containing the attributes found
-                   inside the tag's <> brackets.
-        """
-        if tag in ["h1", "h2", "h3", "h4", "h5", "h6"]:
-            level = int(tag[1])
-            self.in_header = True
-            while self.stack[-1].level >= level:
-                self.stack.pop()
-            new_node = _SectionNode(level=level)
-            self.stack[-1].children.append(new_node)
-            self.stack.append(new_node)
+#         Args:
+#             tag: The name of the tag (e.g., 'h1', 'p', 'div').
+#             attrs: A list of (name, value) pairs containing the attributes found
+#                    inside the tag's <> brackets.
+#         """
+#         if tag in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+#             level = int(tag[1])
+#             self.in_header = True
+#             while self.stack[-1].level >= level:
+#                 self.stack.pop()
+#             new_node = _SectionNode(level=level)
+#             self.stack[-1].children.append(new_node)
+#             self.stack.append(new_node)
 
-    def handle_endtag(self, tag: str) -> None:
-        """
-        Handles the closing of HTML tags.
+#     def handle_endtag(self, tag: str) -> None:
+#         """
+#         Handles the closing of HTML tags.
 
-        If a header tag closes, the 'in_header' flag is reset, and the title
-        of the current section is cleaned to remove any internal markup artifacts.
+#         If a header tag closes, the 'in_header' flag is reset, and the title
+#         of the current section is cleaned to remove any internal markup artifacts.
 
-        Args:
-            tag: The name of the tag being closed.
-        """
-        if tag in ["h1", "h2", "h3", "h4", "h5", "h6"]:
-            self.in_header = False
-            self.stack[-1].title = clean_text(self.stack[-1].title)
+#         Args:
+#             tag: The name of the tag being closed.
+#         """
+#         if tag in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+#             self.in_header = False
+#             self.stack[-1].title = clean_text(self.stack[-1].title)
 
-    def handle_data(self, data: str) -> None:
-        import markdown
-from html.parser import HTMLParser
-from typing import List, Optional, Any, Union, Type, Dict
-from pumpking.models import (
-    ChunkPayload,
-    EntityChunkPayload,
-    TopicChunkPayload,
-    ContextualChunkPayload,
-    ZettelChunkPayload
-)
-from pumpking.protocols import (
-    ExecutionContext,
-    NERProviderProtocol,
-    SummaryProviderProtocol,
-    TopicProviderProtocol,
-    ContextualProviderProtocol,
-    ZettelProviderProtocol
-)
-from pumpking.strategies.base import BaseStrategy
-from pumpking.strategies.basic import (
-    SentenceChunking,
-    AdaptiveChunking,
-    ParagraphChunking,
-)
-from pumpking.utils import clean_text
+#     def handle_data(self, data: str) -> None:
+#         if self.in_header:
+#             self.stack[-1].title += data
+#         else:
+#             self.stack[-1].content_buffer.append(data)
 
 
 class _SectionNode:
@@ -180,7 +159,7 @@ class _SectionNode:
         Returns:
             The combined string of all text data accumulated in the content buffer.
         """
-        return "".join(self.content_buffer)
+        return "\n\n".join(self.content_buffer)
 
 class _MarkdownStructureParser(HTMLParser):
     """
@@ -256,7 +235,8 @@ class _MarkdownStructureParser(HTMLParser):
         if self.in_header:
             self.stack[-1].title += data
         else:
-            self.stack[-1].content_buffer.append(data)
+            clean_data = data.strip()
+            self.stack[-1].content_buffer.append(clean_data)
 
 
 class HierarchicalChunking(BaseStrategy):
