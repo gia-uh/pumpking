@@ -83,7 +83,11 @@ class Step:
 
         context.annotators = self.annotators
 
-        if self._supports_batch_input(self.strategy):
+        # Batch mode maps results back through payload lineage, so it needs chunks as input;
+        # the raw document text of the root goes through iterative mode.
+        all_payloads = all(isinstance(item, ChunkPayload) for item, _ in inputs_with_parents)
+
+        if all_payloads and self._supports_batch_input(self.strategy):
             new_nodes = self._execute_batch(inputs_with_parents, input_nodes, context)
         else:
             new_nodes = self._execute_iterative(inputs_with_parents, input_nodes, context)

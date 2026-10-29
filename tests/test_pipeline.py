@@ -137,3 +137,31 @@ def test_pipeline_sequential_depth():
     assert len(node_s1.branches) == 1
     node_s2 = node_s1.branches[0]
     assert node_s2.strategy_label == "S2"
+
+
+def test_batch_strategy_as_first_step_receives_the_document_text():
+    """
+    A strategy that accepts a list of chunks must still receive the raw document string
+    when it is the first step, since the root has no chunks yet.
+    """
+    from typing import List, Union
+
+    from pumpking.models import ChunkPayload
+    from pumpking.pipeline import PumpkingPipeline, Step
+    from pumpking.protocols import ExecutionContext
+    from pumpking.strategies.base import BaseStrategy
+
+    seen = []
+
+    class BatchUpper(BaseStrategy):
+        def execute(
+            self, data: Union[str, List[ChunkPayload]], context: ExecutionContext
+        ) -> List[ChunkPayload]:
+            seen.append(data)
+            items = data if isinstance(data, list) else [ChunkPayload(content=data)]
+            return [ChunkPayload(content=c.content.upper(), children=[c]) for c in items]
+
+    root = PumpkingPipeline(Step(BatchUpper())).run("hello")
+
+    assert seen == ["hello"]
+    assert root.branches[0].results[0].content == "HELLO"
