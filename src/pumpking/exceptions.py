@@ -52,3 +52,12 @@ class TextCoverageError(ValidationError):
     chunking or transformation processes.
     """
     pass
+class LLMBackendError(PumpkingError):
+    """
+    Exception raised when the LLM backend cannot serve a request.
+
+    Providers catch and tolerate malformed model answers, but this error always propagates:
+    it means no request can succeed, because the API key is missing or the endpoint cannot
+    be reached.
+    """
+    pass
