@@ -1,10 +1,10 @@
-import pytest
-from typing import List, Union
-from pumpking.strategies.basic import SentenceChunking, ParagraphChunking
+from typing import Union
+
 from pumpking.models import ChunkPayload
+from pumpking.pipeline import PumpkingPipeline, Step
 from pumpking.protocols import ExecutionContext
-from pumpking.pipeline import Step, PumpkingPipeline
 from pumpking.strategies.base import BaseStrategy
+from pumpking.strategies.basic import ParagraphChunking, SentenceChunking
 
 # --- Fixtures and Mocks ---
 
@@ -51,7 +51,7 @@ def test_sentence_chunking_handles_abbreviations():
     context = ExecutionContext()
     
     text = "Mr. Smith went to Dr. Jones on Jan. 5th."
-    results = chunker.execute(text, context)
+    chunker.execute(text, context)
     
     pass 
 

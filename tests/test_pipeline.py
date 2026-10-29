@@ -1,6 +1,7 @@
 from typing import List, Union
-from pumpking.pipeline import Step, PumpkingPipeline, annotate
+
 from pumpking.models import ChunkNode, ChunkPayload
+from pumpking.pipeline import PumpkingPipeline, Step, annotate
 from pumpking.protocols import ExecutionContext
 from pumpking.strategies.base import BaseStrategy
 

@@ -1,17 +1,8 @@
-import inspect
-from typing import (
-    List,
-    Union,
-    Type,
-    Any,
-    get_type_hints,
-    get_origin,
-    get_args,
-    Set
-)
-from pumpking.pipeline import Step, PumpkingPipeline
+from typing import Any, List, Set, Type, Union, get_args, get_origin, get_type_hints
+
 from pumpking.exceptions import PipelineConfigurationError
-from pumpking.models import ChunkNode, ChunkPayload, DocumentRoot
+from pumpking.models import ChunkPayload
+from pumpking.pipeline import PumpkingPipeline, Step
 
 
 def validate(pipeline: Union[Step, List[Any], PumpkingPipeline]) -> None:
@@ -195,7 +186,7 @@ def _validate_parallel_block(branches: List[Step]) -> None:
             _validate_step_compatibility(step)
             _validate_annotators(step)
         except PipelineConfigurationError as e:
-            raise PipelineConfigurationError(f"Branch {idx} error: {str(e)}")
+            raise PipelineConfigurationError(f"Branch {idx} error: {str(e)}") from e
 
 
 def _type_allows(target_hint: Any, check_type: Type) -> bool:

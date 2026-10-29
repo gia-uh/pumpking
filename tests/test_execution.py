@@ -1,8 +1,9 @@
 from typing import List, Union
+
+from pumpking.models import ChunkPayload, DocumentRoot
 from pumpking.pipeline import PumpkingPipeline, Step, annotate
-from pumpking.models import DocumentRoot, ChunkPayload
-from pumpking.strategies.base import BaseStrategy
 from pumpking.protocols import ExecutionContext
+from pumpking.strategies.base import BaseStrategy
 
 
 # --- Mocks and Data ---

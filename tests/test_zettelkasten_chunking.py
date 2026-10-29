@@ -1,9 +1,8 @@
 import uuid
-import pytest
-from typing import List, Any
-from unittest.mock import MagicMock, Mock
+from typing import Any, List
+from unittest.mock import Mock
 
-from pumpking.models import ChunkPayload, ZettelChunkPayload, EntityChunkPayload
+from pumpking.models import ChunkPayload, ZettelChunkPayload
 from pumpking.protocols import ExecutionContext, ZettelProviderProtocol
 from pumpking.strategies.advanced import ZettelkastenChunking
 from pumpking.strategies.base import BaseStrategy

@@ -1,5 +1,6 @@
 from pumpking.utils import clean_text
 
+
 def test_clean_text_defaults():
     raw = "  Hello    World  "
     assert clean_text(raw) == "Hello World"

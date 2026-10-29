@@ -1,4 +1,5 @@
-from typing import List, Union, get_type_hints, Any
+from typing import List, Union, get_type_hints
+
 from pumpking.models import ChunkPayload
 from pumpking.protocols import ExecutionContext
 from pumpking.strategies.base import BaseStrategy

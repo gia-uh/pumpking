@@ -1,6 +1,3 @@
-import pytest
-from typing import List
-from pumpking.models import ChunkPayload
 from pumpking.protocols import ExecutionContext
 from pumpking.strategies.basic import ParagraphChunking, SentenceChunking
 

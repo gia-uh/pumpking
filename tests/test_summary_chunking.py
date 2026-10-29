@@ -1,9 +1,9 @@
-import pytest
-from typing import List, Any
-from pumpking.strategies.advanced import SummaryChunking
-from pumpking.strategies.base import BaseStrategy
+from typing import Any, List
+
 from pumpking.models import ChunkPayload
 from pumpking.protocols import ExecutionContext, SummaryProviderProtocol
+from pumpking.strategies.advanced import SummaryChunking
+from pumpking.strategies.base import BaseStrategy
 
 # --- Mocks ---
 

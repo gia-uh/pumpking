@@ -37,7 +37,10 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B"] # Errores, Pyflakes, Imports, Bugbear (Simple)
+select = ["E", "F", "I", "B"]
+# Long lines are mostly LLM prompts and Field descriptions sent to the model;
+# wrapping them would change what the model reads.
+ignore = ["E501"]
 
 # --- Mypy (Types) ---
 [tool.mypy]

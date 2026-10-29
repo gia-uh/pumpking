@@ -1,23 +1,24 @@
-import os
 import difflib
+import os
 import uuid
-from typing import List, Optional, Dict, Set, Tuple, Any, Union
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 from openai import APIConnectionError, OpenAI
 from pydantic import BaseModel, Field
 
 from pumpking.exceptions import LLMBackendError
 from pumpking.models import (
     ChunkPayload,
-    ZettelChunkPayload,
+    ContextualChunkPayload,
     EntityChunkPayload,
     TopicChunkPayload,
-    ContextualChunkPayload
+    ZettelChunkPayload,
 )
 from pumpking.protocols import (
+    ContextualProviderProtocol,
     NERProviderProtocol,
     SummaryProviderProtocol,
     TopicProviderProtocol,
-    ContextualProviderProtocol,
     ZettelProviderProtocol,
 )
 
@@ -896,7 +897,7 @@ class LLMZettelProvider(ZettelProviderProtocol):
             chunks[i : i + batch_size] for i in range(0, len(chunks), batch_size)
         ]
 
-        for batch_index, batch in enumerate(batches):
+        for batch in batches:
             try:
                 previous_concepts = list(global_handle_map.keys())
                 system_prompt = self._build_zettel_system_prompt()

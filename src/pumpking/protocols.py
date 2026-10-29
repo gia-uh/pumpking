@@ -1,12 +1,15 @@
 from typing import Any, Dict, List, Protocol, runtime_checkable
+
 from pydantic import BaseModel, ConfigDict
+
 from pumpking.models import (
-    ChunkPayload, 
-    EntityChunkPayload, 
+    ChunkPayload,
+    ContextualChunkPayload,
+    EntityChunkPayload,
     TopicChunkPayload,
     ZettelChunkPayload,
-    ContextualChunkPayload
 )
+
 
 class ExecutionContext(BaseModel):
     """

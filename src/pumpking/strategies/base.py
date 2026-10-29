@@ -1,6 +1,7 @@
-from typing import Any, List, Optional, Union
+from typing import List, Optional, Union
+
 from pumpking.models import ChunkPayload
-from pumpking.protocols import StrategyProtocol, ExecutionContext
+from pumpking.protocols import ExecutionContext, StrategyProtocol
 
 
 class BaseStrategy(StrategyProtocol):

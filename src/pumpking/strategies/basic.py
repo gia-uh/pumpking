@@ -1,10 +1,10 @@
 import re
-from typing import List, Any, Union
+from typing import List, Union
 
 from pumpking.models import ChunkPayload
-from pumpking.utils import clean_text
 from pumpking.protocols import ExecutionContext
 from pumpking.strategies.base import BaseStrategy
+from pumpking.utils import clean_text
 
 
 class RegexChunking(BaseStrategy):
