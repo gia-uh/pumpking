@@ -567,19 +567,24 @@ class SummaryChunking(BaseStrategy):
             else:
                 units = [source]
 
-            for unit in units:
-                unit_content = clean_text(
-                    unit.content,
-                    strip_markdown=self.strip_markdown,
-                    collapse_whitespace=self.collapse_whitespace,
+            cleaned_units = [
+                ChunkPayload(
+                    content=clean_text(
+                        unit.content,
+                        strip_markdown=self.strip_markdown,
+                        collapse_whitespace=self.collapse_whitespace,
+                    )
                 )
+                for unit in units
+            ]
 
-                summary_raw = self.provider.summarize(
-                    unit_content, **self.provider_kwargs
-                )
+            summaries = self.provider.summarize(cleaned_units, **self.provider_kwargs)
+
+            for summary in summaries:
+                unit_content = summary.children[0].content if summary.children else None
 
                 final_summary = clean_text(
-                    summary_raw,
+                    summary.content,
                     strip_markdown=self.strip_markdown,
                     collapse_whitespace=self.collapse_whitespace,
                 )
