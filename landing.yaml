@@ -1,0 +1,39 @@
+name: Pumpking
+accent: "#C96F1E"
+tagline:
+  es: Troceado de documentos para RAG
+  en: Document chunking for RAG
+intro:
+  es: Convierte un documento en un árbol de fragmentos para buscar y recuperar sobre él. Las estrategias básicas funcionan sin red; las avanzadas piden a un modelo entidades, resúmenes o temas.
+  en: Turns a document into a tree of chunks to search and retrieve over. The basic strategies run offline; the advanced ones ask a model for entities, summaries or topics.
+install: pip install git+https://github.com/gia-uh/pumpking
+links:
+  code: https://github.com/gia-uh/pumpking
+features:
+  - es: Párrafo, oración, ventana deslizante y troceado adaptativo, sin modelo y sin red.
+    en: Paragraph, sentence, sliding-window and adaptive chunking, with no model and no network.
+  - es: Entidades, resúmenes, temas y contexto con cualquier modelo compatible con la API de OpenAI.
+    en: Entities, summaries, topics and context with any OpenAI-compatible model.
+  - es: Pipelines que encadenan y ramifican estrategias con >> y |, y guardan el árbol completo.
+    en: Pipelines that chain and branch strategies with >> and |, and keep the whole tree.
+example:
+  lang: python
+  code: |
+    from pumpking.pipeline import PumpkingPipeline, Step
+    from pumpking.strategies.basic import ParagraphChunking, SentenceChunking
+
+    text = "La Habana tiene muchos barrios. El Vedado es uno.\n\nCentro Habana queda al lado."
+    pipeline = PumpkingPipeline(Step(ParagraphChunking()) >> Step(SentenceChunking()))
+    doc = pipeline.run(text)
+
+    def show(node, depth=0):
+        for chunk in node.results:
+            print("  " * depth + chunk.content)
+        for branch in node.branches:
+            show(branch, depth + 1)
+
+    for node in doc.branches:
+        show(node)
+status:
+  es: Camino a la 1.0 · licencia MIT
+  en: On the way to 1.0 · MIT licence
