@@ -1,9 +1,9 @@
-import pytest
-from typing import List, Any
-from pumpking.strategies.advanced import SummaryChunking
-from pumpking.strategies.base import BaseStrategy
+from typing import Any, List
+
 from pumpking.models import ChunkPayload
 from pumpking.protocols import ExecutionContext, SummaryProviderProtocol
+from pumpking.strategies.advanced import SummaryChunking
+from pumpking.strategies.base import BaseStrategy
 
 # --- Mocks ---
 
@@ -23,8 +23,8 @@ class MockSummaryProvider(SummaryProviderProtocol):
     """
     Simulates a sequential LLM provider.
     """
-    def summarize(self, text: str, **kwargs: Any) -> str:
-        return f"Summary of: {text}"
+    def summarize(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ChunkPayload]:
+        return [ChunkPayload(content=f"Summary of: {c.content}", children=[c]) for c in chunks]
 
 class MockAnnotator(BaseStrategy):
     """
@@ -93,8 +93,8 @@ def test_summary_chunking_content_raw_optimization():
     text = "Atom"
     
     class IdentityProvider(SummaryProviderProtocol):
-        def summarize(self, text: str, **kwargs: Any) -> str:
-            return text 
+        def summarize(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ChunkPayload]:
+            return [ChunkPayload(content=c.content, children=[c]) for c in chunks]
             
     strategy = SummaryChunking(provider=IdentityProvider(), splitter=None)
     context = ExecutionContext()
@@ -119,3 +119,20 @@ def test_summary_chunking_annotations_on_summary():
     
     assert "test" in results[0].annotations
     assert results[0].annotations["test"] == "annotated"
+
+def test_summary_chunking_sends_all_units_of_a_source_in_one_call():
+    """
+    Verifies that the provider receives every unit of a source in a single call, as the
+    SummaryProviderProtocol defines, so that it can batch them.
+    """
+    calls = []
+
+    class RecordingProvider(MockSummaryProvider):
+        def summarize(self, chunks: List[ChunkPayload], **kwargs: Any) -> List[ChunkPayload]:
+            calls.append([c.content for c in chunks])
+            return super().summarize(chunks, **kwargs)
+
+    strategy = SummaryChunking(provider=RecordingProvider(), splitter=MockSplitter())
+    strategy.execute("A | B | C", ExecutionContext())
+
+    assert calls == [["A", "B", "C"]]

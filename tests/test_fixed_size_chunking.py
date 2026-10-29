@@ -1,5 +1,5 @@
 import pytest
-from pumpking.models import ChunkPayload
+
 from pumpking.protocols import ExecutionContext
 from pumpking.strategies.basic import FixedSizeChunking
 

@@ -1,9 +1,11 @@
 import re
-import markdown
-from io import StringIO, IOBase
 from html.parser import HTMLParser
+from io import IOBase, StringIO
 from pathlib import Path
-from typing import Tuple, Optional, Union
+from typing import Optional, Tuple, Union
+
+import markdown
+
 
 class _MLStripper(HTMLParser):
     """
@@ -178,7 +180,7 @@ def resolve_source_content(
             content = str(read_data)
             
         if not final_filename and hasattr(source, "name"):
-            name_attr = getattr(source, "name")
+            name_attr = source.name
             if name_attr and name_attr != "<stdin>":
                 final_filename = str(name_attr)
 

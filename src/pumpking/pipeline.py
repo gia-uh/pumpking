@@ -1,20 +1,12 @@
-import uuid
 import inspect
-from typing import (
-    List, 
-    Union, 
-    Any, 
-    Optional, 
-    Type, 
-    Dict, 
-    get_type_hints, 
-    get_origin, 
-    get_args
-)
-from pumpking.models import ChunkNode, DocumentRoot, ChunkPayload
-from pumpking.protocols import ExecutionContext, StrategyProtocol
+import uuid
+from typing import Any, Dict, List, Optional, Type, Union, get_args, get_origin, get_type_hints
+
 from pumpking.exceptions import PipelineConfigurationError
+from pumpking.models import ChunkNode, ChunkPayload, DocumentRoot
+from pumpking.protocols import ExecutionContext, StrategyProtocol
 from pumpking.utils import resolve_source_content
+
 
 class Step:
     """
@@ -91,7 +83,11 @@ class Step:
 
         context.annotators = self.annotators
 
-        if self._supports_batch_input(self.strategy):
+        # Batch mode maps results back through payload lineage, so it needs chunks as input;
+        # the raw document text of the root goes through iterative mode.
+        all_payloads = all(isinstance(item, ChunkPayload) for item, _ in inputs_with_parents)
+
+        if all_payloads and self._supports_batch_input(self.strategy):
             new_nodes = self._execute_batch(inputs_with_parents, input_nodes, context)
         else:
             new_nodes = self._execute_iterative(inputs_with_parents, input_nodes, context)
@@ -255,7 +251,7 @@ class Step:
         standard ChunkNode.
         """
         if payloads and hasattr(payloads[0], "__node_class__"):
-            return getattr(payloads[0], "__node_class__")
+            return payloads[0].__node_class__
         return ChunkNode
 
     def _create_node(

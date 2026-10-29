@@ -4,221 +4,200 @@
 
 # Pumpking 🎃
 
-`pumpking` is an open-source Python library designed to streamline the complex process of document chunking, parsing, and representation. It provides a flexible and powerful pipeline to transform unstructured documents into structured, queryable knowledge.
+`pumpking` is a Python library for document chunking. It splits a document into a tree of chunks that keeps the lineage of every fragment back to its source, ready to index for RAG (Retrieval-Augmented Generation) or to analyze.
 
-Whether you're building a RAG (Retrieval-Augmented Generation) system, a document analysis tool, or a knowledge extraction service, `pumpking` provides the foundational blocks to get you there faster.
+It ships rule-based strategies (regex, paragraphs, sentences, fixed size, sliding windows, adaptive) and semantic strategies that delegate to a model through small protocols (entities, summaries, topics, contextual chunks, zettels). A built-in provider implements those protocols with any OpenAI-compatible API. Strategies compose into pipelines with `>>` (sequence), lists (branches) and `|` (annotations).
 
-## The P.U.M.P.K.I.N.G. Pipeline Explained
+## Installation
 
-The name `pumpking` stands for our core architecture:
+```bash
+pip install pumpking
+```
 
-* **Processing**: Loading raw documents from various sources and preparing them for parsing.
-* **Understanding**: Applying parsing and intelligent chunking to break down documents while preserving semantic meaning.
-* **Modeling**: Transforming the chunks into structured representations like vector embeddings or knowledge graph nodes.
-* **Knowledge Integration**: Connecting the dots—linking entities, normalizing information, and constructing a coherent knowledge base from the document.
-* **Natural-language Generation**: Using the integrated knowledge as a rich context for LLMs to perform downstream tasks like summarization or Q&A.
+Pumpking needs Python 3.10 or newer.
+
+## Quick Start
+
+This example chunks a document, extracts the named entities of each chunk as an annotation, and summarizes each chunk. Save any Markdown or text file as `report.md` next to the script.
+
+```python
+from pathlib import Path
+
+from pumpking.pipeline import PumpkingPipeline, Step, annotate
+from pumpking.strategies.advanced import EntityBasedChunking, SummaryChunking
+from pumpking.strategies.basic import AdaptiveChunking
+from pumpking.strategies.providers import LLMBackend, LLMNERProvider, LLMSummaryProvider
+
+# 1. The backend reads OPENAI_API_KEY and, if set, OPENAI_BASE_URL from the environment.
+backend = LLMBackend(default_model="gpt-4o", default_temperature=0.0)
+
+# 2. Providers implement the semantic tasks on top of the backend.
+ner_provider = LLMNERProvider(backend=backend)
+summary_provider = LLMSummaryProvider(backend=backend)
+
+# 3. Chunk the text and annotate each chunk with its entities, then summarize each chunk.
+pipeline = PumpkingPipeline(
+    Step(AdaptiveChunking(min_chunk_size=500, max_chunk_size=2000))
+    | annotate(EntityBasedChunking(ner_provider=ner_provider), alias="entities")
+) >> Step(SummaryChunking(provider=summary_provider))
+
+# 4. Run it on a file (a pathlib.Path, an open file or a plain string).
+result = pipeline.run(Path("report.md"))
+
+# 5. Walk the tree: each chunk node holds its chunk and, below it, the summary node.
+for chunk_node in result.branches:
+    chunk = chunk_node.results[0]
+    entities = sorted({e.entity for e in chunk.annotations.get("entities", [])})
+    print(f"\n--- Chunk {chunk.id} ---")
+    print("Text:", chunk.content[:80], "...")
+    print("Entities:", ", ".join(entities) or "none")
+    for summary_node in chunk_node.branches:
+        for summary in summary_node.results:
+            print("Summary:", summary.content)
+```
+
+Run it with your key in the environment:
+
+```bash
+export OPENAI_API_KEY=sk-...
+python quickstart.py
+```
+
+To use a local model instead, point the backend at any server that speaks the OpenAI chat completions API with structured outputs, such as Ollama or vLLM. Local servers that do not check keys accept any value:
+
+```bash
+export OPENAI_BASE_URL=http://localhost:11434/v1
+export OPENAI_API_KEY=unused
+```
+
+and pass a model that server knows, for example `LLMBackend(default_model="llama3.1")`.
+
+If the endpoint cannot be reached, the first call raises `pumpking.exceptions.LLMBackendError` with the URL it tried.
+
+More scripts are in [`examples/`](examples/). They run without network access or a key.
 
 ---
 
-## 🏗️ Core Philosophy: Protocols over Implementations
+## Strategies
 
-Pumpking is built on a **Protocol-First Architecture**. We define strict interfaces (Python Protocols) for semantic tasks, decoupling the *strategy* from the *implementation*.
+Pumpking distinguishes **basic strategies** (rules and structure) from **advanced strategies** (document structure or a semantic provider).
 
-This means you are **not locked into Large Language Models (LLMs)**. While we provide LLM-based implementations out of the box for convenience, you can easily implement these protocols using other paradigms:
+### Basic strategies
 
-* **`NERProviderProtocol`**: Could be implemented with **SpaCy**, **GluonNLP**, or a **Regex** lookup table.
-* **`TopicProviderProtocol`**: Could use **BERTopic** or **LDA**.
-* **`SummaryProviderProtocol`**: Could use a standard **T5** or **BART** model locally.
+* **`FixedSizeChunking`**: Splits text into windows of a fixed character length, with optional overlap.
+* **`RegexChunking`**: Splits text on any regular expression.
+* **`ParagraphChunking`**: Splits on blank lines (`\n\n`), treating paragraphs as atomic units.
+* **`SentenceChunking`**: Splits on sentence punctuation (`.`, `?`, `!`) with look-behind rules.
+* **`SlidingWindowChunking`**: Builds overlapping windows of **words**.
+* **`AdaptiveChunking`**: Accumulates whole sentences into chunks between `min_chunk_size` and `max_chunk_size` characters, never breaking a sentence.
 
-As long as your class adheres to the protocol defined in `pumpking.protocols`, it will work seamlessly with any Advanced Strategy.
+### Advanced strategies
 
----
-
-## 🛠️ Strategies
-
-Pumpking distinguishes between **Basic Strategies** (algorithmic/heuristic) and **Advanced Strategies** (semantic/inference-based).
-
-### Basic Strategies
-
-Foundational splitting logic relying on rules, regex, and structure.
-
-* **`FixedSizeChunking`**: Rigidly splits text into windows of a specific character length with optional overlap.
-* **`RegexChunking`**: A versatile splitter that divides text based on any configurable regular expression pattern.
-* **`ParagraphChunking`**: Semantic splitting based on double newlines (`\n\n`), treating paragraphs as atomic units.
-* **`SentenceChunking`**: Uses linguistic heuristics (punctuation look-behinds like `.` `?` `!`) to split text into grammatical sentences.
-* **`SlidingWindowChunking`**: Operates on **words** (splitting by whitespace) to create overlapping windows, maintaining context flow better than character splitting.
-* **`AdaptiveChunking`**: A smart accumulation strategy. It builds chunks sentence-by-sentence up to a `max_chunk_size` limit, ensuring sentences are never broken and context is maximized.
-
-### Advanced Strategies
-
-These strategies perform deep semantic analysis by delegating work to an injected **Provider**.
-
-* **`HierarchicalChunking`**: Respects document structure by parsing Markdown headers (`H1` -> `H2`). It builds a nested tree where sections contain their subsections.
-* **`EntityBasedChunking`**: Decomposes text to identify named entities (People, Organizations). It preserves strict lineage, linking every extracted entity back to the specific source fragments.
-* **`SummaryChunking`**: Splits text into semantic blocks and generates concise summaries for each.
-* **`TopicBasedChunking`**: Analyzes content to identify latent topics or themes, grouping content clusters under shared semantic topics.
-* **`ContextualChunking`**: Designed for RAG. It enriches individual text fragments with "Global Document Context"—resolving pronouns and adding missing background info.
-* **`ZettelkastenChunking`**: Transforms text into **Zettels**—atomic units of knowledge or hypotheses linked to evidence.
+* **`HierarchicalChunking`**: Parses Markdown headers (`H1` -> `H2`) into a nested tree of sections, and can apply other strategies to each section's body.
+* **`EntityBasedChunking`** (`ner_provider=`): Finds named entities (people, organizations, places) and links each one back to the sentences that mention it.
+* **`SummaryChunking`** (`provider=`): Splits text into blocks and summarizes each block, keeping the source as the summary's child.
+* **`TopicBasedChunking`** (`topic_provider=`): Discovers a topic taxonomy and groups chunks under the topics they belong to.
+* **`ContextualChunking`** (`provider=`): Adds document-level context to each fragment (who "he" is, which section it comes from), as in contextual retrieval.
+* **`ZettelkastenChunking`** (`zettel_provider=`): Extracts atomic ideas (zettels) linked to the fragments that support them and to each other.
 
 ---
 
-## 🤖 Built-in LLM Providers
+## Providers
 
-For immediate productivity, Pumpking includes a reference implementation of the protocols powered by **LLMs**. These are production-ready and handle the complexity of structured output parsing and API communication.
+The advanced strategies depend on protocols defined in `pumpking.protocols`, not on a model vendor:
 
-They use a decoupled architecture with a shared **`LLMBackend`**.
+* **`NERProviderProtocol`**
+* **`SummaryProviderProtocol`**
+* **`TopicProviderProtocol`**
+* **`ContextualProviderProtocol`**
+* **`ZettelProviderProtocol`**
 
-### 1. The Backend
+Any class with the protocol's method works with the matching strategy, so you can back a strategy with spaCy, a local seq2seq model or a lookup table. [`examples/02_custom_provider.py`](examples/02_custom_provider.py) shows one.
 
-Manages the connection to the LLM. You must configure the API key (or set `OPENAI_API_KEY`) and the default model.
+### Built-in LLM providers
+
+Pumpking includes one implementation of each protocol on top of a shared **`LLMBackend`**, which talks to any OpenAI-compatible API:
 
 ```python
 from pumpking.strategies.providers import LLMBackend
 
-# Configuration based on source code signature:
 backend = LLMBackend(
-    api_key="sk-...",           # Your API Key (optional if env var set)
-    default_model="gpt-4o",     # Model identifier
-    default_temperature=0.0,    # Controls randomness
-    base_url=None               # Optional: Set for local LLMs
+    base_url=None,           # default: OPENAI_BASE_URL, else https://api.openai.com/v1
+    api_key=None,            # default: OPENAI_API_KEY
+    default_model="gpt-4o",
+    default_temperature=0.0,
+    timeout=60.0,            # seconds per request
+    max_retries=2,           # retries per request before raising
 )
-
 ```
 
-### 2. The Providers
-
-Inject the `backend` into any of the available providers:
+Inject the backend into the providers:
 
 * **`LLMNERProvider`**: Extracts entities and resolves coreferences.
-* **`LLMSummaryProvider`**: Generates summaries for chunks.
-* **`LLMTopicProvider`**: Discovers taxonomies and assigns topics.
-* **`LLMContextualProvider`**: Generates situational context (Contextual RAG).
-* **`LLMZettelProvider`**: Synthesizes atomic hypotheses (Zettels).
+* **`LLMSummaryProvider`**: Summarizes chunks, five per request.
+* **`LLMTopicProvider`**: Discovers a taxonomy and assigns topics.
+* **`LLMContextualProvider`**: Generates situational context for each fragment.
+* **`LLMZettelProvider`**: Synthesizes atomic ideas (zettels).
 
 ```python
 from pumpking.strategies.providers import LLMNERProvider, LLMZettelProvider
 
 ner_provider = LLMNERProvider(backend=backend)
 zettel_provider = LLMZettelProvider(backend=backend)
-
 ```
+
+### Performance: LLM calls are serial
+
+Every provider call is a blocking request, and requests run one after another. `SummaryChunking` sends one request per five blocks, `EntityBasedChunking` one per window of sentences, and pipeline branches run in sequence. A long document therefore takes as many round trips as it has batches: test on short texts first, and use `timeout` and `max_retries` to bound how long a slow endpoint can stall a run.
+
+### Security: API keys
+
+Pass the key through the `OPENAI_API_KEY` environment variable (or a secret manager that sets it), not as a literal in code you commit. `repr(backend)` shows the endpoint and model but not the key; avoid logging `backend.api_key` or `backend.client`.
 
 ---
 
-## 🚀 The Pipeline Architecture
+## Pipelines
 
-Pumpking's `Pipeline` implements a Directed Acyclic Graph (DAG) executor. It is designed to be composable, allowing you to chain strategies, run them in parallel, or attach them as metadata extractors.
+`PumpkingPipeline` runs steps over a tree. Each step's output chunks become nodes below the chunks they came from.
 
-### 1. Sequential Execution (Chaining)
+### Sequential execution
 
-The most common pattern. The output of `Step A` becomes the input of `Step B`.
-Use the `>>` (Shift) operator to chain steps.
+The output of one step is the input of the next. Chain steps with `>>`.
 
 ```python
-# Pattern: Input -> Chunk -> Summarize -> Output
 pipeline = PumpkingPipeline(
     Step(AdaptiveChunking(1000, 3000))
 ) >> Step(SummaryChunking(provider=summary_provider))
-
 ```
 
-### 2. Parallel Execution (Branching)
+### Branches
 
-You can split the processing flow into multiple branches that run on the same input data. The results are merged back into the stream for the next step.
-Pass a **list of Steps** to create branches.
+Pass a **list of steps** to run several strategies on the same input. Each branch adds its own nodes.
 
 ```python
-# Pattern: Input -> Chunk -> [Identify Topics, Extract Entities] -> Merge Results
 pipeline = PumpkingPipeline(
     Step(AdaptiveChunking(1000, 3000))
 ) >> [
-    Step(TopicBasedChunking(provider=topic_provider)), 
-    Step(EntityBasedChunking(provider=ner_provider))
+    Step(TopicBasedChunking(topic_provider=topic_provider)),
+    Step(EntityBasedChunking(ner_provider=ner_provider)),
 ]
-
 ```
 
-### 3. Annotations (Enrichment)
+### Annotations
 
-Sometimes you want to extract metadata *about* a chunk without transforming the chunk itself. An **Annotator** runs "inside" a step, attaching its result to the `chunk.annotations` dictionary.
-Use the `|` (Pipe) operator and the `annotate` helper.
-
-```python
-# Pattern: Chunk (and tag each chunk with Sentiment)
-step = Step(AdaptiveChunking(1000, 3000)) | annotate(SentimentStrategy(), alias="sentiment")
-
-```
----
-
-## Quick Start: A Real-World Example
-
-This example demonstrates a complete pipeline using the **built-in LLM providers**. It chunks a document, extracts entities as metadata (Annotation), and summarizes the chunks (Sequential).
+An **annotator** runs on each chunk a step produces and stores its result in `chunk.annotations` under an alias, without adding nodes. Attach it with `|` and `annotate`.
 
 ```python
-import os
-from pumpking.pipeline import PumpkingPipeline, Step, annotate
-from pumpking.strategies.basic import AdaptiveChunking
-from pumpking.strategies.advanced import EntityBasedChunking, SummaryChunking
-from pumpking.strategies.providers import LLMBackend, LLMNERProvider, LLMSummaryProvider
-
-# 1. Initialize the Backend
-backend = LLMBackend(
-    default_model="gpt-4o",
-    default_temperature=0.0
+step = Step(AdaptiveChunking(1000, 3000)) | annotate(
+    EntityBasedChunking(ner_provider=ner_provider), alias="entities"
 )
-
-# 2. Initialize Providers
-ner_provider = LLMNERProvider(backend=backend)
-summary_provider = LLMSummaryProvider(backend=backend)
-
-# 3. Define the Pipeline using Fluent Syntax
-# Flow:
-#  1. Chunk text (Adaptive)
-#     └── AND Identify Entities (Annotation: 'entities')
-#  2. THEN Summarize those chunks (Sequential)
-
-pipeline = PumpkingPipeline(
-    Step(AdaptiveChunking(min_chunk_size=500, max_chunk_size=2000)) 
-    | annotate(EntityBasedChunking(ner_provider=ner_provider), alias="entities")
-) >> Step(SummaryChunking(provider=summary_provider))
-
-# 4. Run on a file (Pumpking handles I/O automatically)
-result_root = pipeline.run(Path("docs/annual_report.md"))
-
-# 5. Inspect the Graph
-for node in result_root.branches:
-    for chunk in node.results:
-        print(f"\n--- Chunk {chunk.id} ---")
-        print(f"Summary: {chunk.content[:100]}...")
-        
-        # Access original content (preserved in children by SummaryChunking)
-        if chunk.children:
-             print(f"Original Text: {chunk.children[0].content[:50]}...")
-
-        # Access Annotations (passed down or stored on children depending on strategy)
-        # Note: SummaryChunking creates new nodes, so annotations from Step 1 
-        # are typically found on the source chunks (children).
-        source_chunk = chunk.children[0]
-        if "entities" in source_chunk.annotations:
-            print("Entities in original text:", len(source_chunk.annotations["entities"]))
-
 ```
 
 ---
 
 ## Contributing
 
-Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-Please read `CONTRIBUTING.md` for details on our code of conduct and the process for submitting pull requests to us.
-
----
+Contributions are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for the design rules and the development setup, then open a pull request.
 
 ## Developed By
 
@@ -227,8 +206,6 @@ Please read `CONTRIBUTING.md` for details on our code of conduct and the process
 * **[GIA-UH](https://github.com/gia-uh/)** (Grupo de Inteligencia Artificial - Universidad de La Habana)
 * **[Syalia S.R.L.](https://syalia.com/)**
 
----
-
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

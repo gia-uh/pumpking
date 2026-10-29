@@ -1,11 +1,12 @@
 import uuid
+
 from pumpking.models import (
     ChunkNode,
     ChunkPayload,
+    ContextualChunkPayload,
     DocumentRoot,
     EntityChunkPayload,
     TopicChunkPayload,
-    ContextualChunkPayload,
 )
 
 

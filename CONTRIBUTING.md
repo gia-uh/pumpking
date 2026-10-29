@@ -20,14 +20,14 @@ Before you write code, please understand our core design philosophy. We prioriti
 We use **[uv](https://github.com/astral-sh/uv)** for ultra-fast dependency management and virtual environments.
 
 ### 1. Prerequisites
-* Python 3.9+
+* Python 3.10+
 * `uv` installed (`pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
 ### 2. Installation
 Clone the repository and sync the environment:
 
 ```bash
-git clone [https://github.com/gia-uh/pumpking.git](https://github.com/gia-uh/pumpking.git)
+git clone https://github.com/gia-uh/pumpking.git
 cd pumpking
 
 # Create virtualenv and install dependencies (including dev)

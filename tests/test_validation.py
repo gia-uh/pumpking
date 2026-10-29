@@ -1,11 +1,12 @@
+from typing import Any
+
 import pytest
-from typing import Any, List
-from pumpking.pipeline import Step, PumpkingPipeline, annotate
+
+from pumpking.exceptions import PipelineConfigurationError
+from pumpking.pipeline import PumpkingPipeline, Step
 from pumpking.protocols import ExecutionContext
 from pumpking.strategies.base import BaseStrategy
 from pumpking.validation import validate
-from pumpking.exceptions import PipelineConfigurationError
-from pumpking.models import ChunkPayload
 
 # --- Mocks and Data ---
 
@@ -105,4 +106,4 @@ def test_merge_with_implicit_flattening():
     NOW VALID: The pipeline supports Auto-FlatMap. Validation should PASS.
     """
     parallel_block = [Step(StringProducer(), alias="single_parallel")]
-    pipeline = PumpkingPipeline(Step(StringProducer()) >> parallel_block)
+    PumpkingPipeline(Step(StringProducer()) >> parallel_block)

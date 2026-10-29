@@ -1,24 +1,28 @@
-import os
 import difflib
+import os
 import uuid
-from typing import List, Optional, Dict, Set, Tuple, Any, Union
-from openai import OpenAI
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from openai import APIConnectionError, OpenAI
 from pydantic import BaseModel, Field
 
+from pumpking.exceptions import LLMBackendError
 from pumpking.models import (
     ChunkPayload,
-    ZettelChunkPayload,
+    ContextualChunkPayload,
     EntityChunkPayload,
     TopicChunkPayload,
-    ContextualChunkPayload
+    ZettelChunkPayload,
 )
 from pumpking.protocols import (
+    ContextualProviderProtocol,
     NERProviderProtocol,
     SummaryProviderProtocol,
     TopicProviderProtocol,
-    ContextualProviderProtocol,
     ZettelProviderProtocol,
 )
+
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 
 class LLMEntityResult(BaseModel):
@@ -105,75 +109,119 @@ class LLMZettelResponse(BaseModel):
 
 class LLMBackend:
     """
-    Central infrastructure component for managing interactions with LLM APIs compatible with the OpenAI library format.
-    
-    This class acts as a shared resource for various specialized providers (NER, Summary, etc.), 
-    encapsulating the client configuration, authentication, and connection details. It ensures 
-    that all downstream strategies utilize a consistent configuration for model selection 
+    Central infrastructure component for managing interactions with LLM APIs compatible with
+    the OpenAI library format.
+
+    This class acts as a shared resource for various specialized providers (NER, Summary, etc.),
+    encapsulating the client configuration, authentication, and connection details. It ensures
+    that all downstream strategies utilize a consistent configuration for model selection
     and API parameters.
+
+    Every provider call is a blocking request, made one after another: a strategy that
+    processes N chunks makes N (or N / batch size) sequential requests.
     """
 
     def __init__(
         self,
-        base_url: str,
+        base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         default_model: str = "gpt-4o",
         default_temperature: float = 0.0,
+        timeout: float = 60.0,
+        max_retries: int = 2,
     ) -> None:
         """
         Initializes the LLM backend with the necessary credentials and default settings.
 
         Args:
-            api_key: The authentication key for the LLM service. If not provided, it attempts to read from the OPENAI_API_KEY environment variable.
-            base_url: An optional override for the API endpoint, allowing usage of non-OpenAI providers that support the same interface.
-            default_model: The identifier of the model to be used by default for all operations unless overridden.
-            default_temperature: The default sampling temperature to control the randomness of the model's output.
+            base_url: The API endpoint. Defaults to the OPENAI_BASE_URL environment variable,
+                or to the OpenAI API if it is not set. Point it at any server that speaks the
+                OpenAI chat completions API (for example a local Ollama or vLLM server).
+            api_key: The authentication key for the LLM service. If not provided, it is read
+                from the OPENAI_API_KEY environment variable.
+            default_model: The identifier of the model to be used by default for all
+                operations unless overridden.
+            default_temperature: The default sampling temperature to control the randomness
+                of the model's output.
+            timeout: Seconds to wait for each request before giving up.
+            max_retries: How many times a failed request is retried before an error is raised.
         """
+        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.client = None
         if self.api_key:
-            self.client = OpenAI(api_key=self.api_key, base_url=base_url)
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=timeout,
+                max_retries=max_retries,
+            )
 
         self.default_model = default_model
         self.default_temperature = default_temperature
 
-    def create_completion(self, messages: List[Dict[str, str]], response_format: Any, **kwargs: Any) -> Any:
-        """
-        Helper method to execute a structured completion request against the configured LLM client.
+    def __repr__(self) -> str:
+        return f"LLMBackend(base_url={self.base_url!r}, default_model={self.default_model!r})"
 
-        This method centralizes the call to the client's parsing engine, handling the injection 
-        of default parameters such as the model and temperature if they are not explicitly provided 
-        in the keyword arguments.
+    def _require_client(self) -> OpenAI:
+        if not self.client:
+            raise LLMBackendError(
+                "No API key for the LLM backend. Set the OPENAI_API_KEY environment variable "
+                "or pass api_key= (local servers without authentication accept any value)."
+            )
+        return self.client
+
+    def _connection_error(self, error: Exception) -> LLMBackendError:
+        return LLMBackendError(
+            f"Could not reach the LLM endpoint at {self.base_url} ({error}). "
+            "Check base_url or the OPENAI_BASE_URL environment variable."
+        )
+
+    def create_completion(
+        self, messages: List[Dict[str, str]], response_format: Any, **kwargs: Any
+    ) -> Any:
+        """
+        Helper method to execute a structured completion request against the configured LLM
+        client.
+
+        This method centralizes the call to the client's parsing engine, handling the injection
+        of default parameters such as the model and temperature if they are not explicitly
+        provided in the keyword arguments.
 
         Args:
-            messages: A list of message dictionaries representing the conversation history or prompt.
-            response_format: The Pydantic model class defining the expected structure of the response.
+            messages: A list of message dictionaries representing the conversation history or
+                prompt.
+            response_format: The Pydantic model class defining the expected structure of the
+                response.
             **kwargs: Additional parameters to override defaults (e.g., 'model', 'temperature').
 
         Returns:
-            The parsed response object complying with the structure defined in `response_format`.
+            The parsed response object complying with the structure defined in
+            `response_format`.
 
         Raises:
-            ValueError: If the client has not been initialized with an API key.
+            LLMBackendError: If no API key is configured or the endpoint cannot be reached.
         """
-        if not self.client:
-            raise ValueError("OpenAI Client not initialized. Please provide an API Key.")
-        
+        client = self._require_client()
+
         model = kwargs.get("model", self.default_model)
         temperature = kwargs.get("temperature", self.default_temperature)
 
-        return self.client.beta.chat.completions.parse(
-            model=model,
-            messages=messages,
-            response_format=response_format,
-            temperature=temperature,
-        )
+        try:
+            return client.beta.chat.completions.parse(
+                model=model,
+                messages=messages,
+                response_format=response_format,
+                temperature=temperature,
+            )
+        except APIConnectionError as e:
+            raise self._connection_error(e) from e
 
     def create_chat_completion(self, messages: List[Dict[str, str]], **kwargs: Any) -> Any:
         """
         Helper method to execute a standard (unstructured) chat completion request.
 
-        This method is used when the response does not need to adhere to a specific JSON schema 
+        This method is used when the response does not need to adhere to a specific JSON schema
         or Pydantic model, returning the raw completion object instead.
 
         Args:
@@ -182,18 +230,23 @@ class LLMBackend:
 
         Returns:
             The raw response object from the LLM provider.
+
+        Raises:
+            LLMBackendError: If no API key is configured or the endpoint cannot be reached.
         """
-        if not self.client:
-            raise ValueError("OpenAI Client not initialized. Please provide an API Key.")
+        client = self._require_client()
 
         model = kwargs.get("model", self.default_model)
         temperature = kwargs.get("temperature", self.default_temperature)
-        
-        return self.client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-        )
+
+        try:
+            return client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+            )
+        except APIConnectionError as e:
+            raise self._connection_error(e) from e
 
 
 class LLMNERProvider(NERProviderProtocol):
@@ -488,6 +541,10 @@ class LLMSummaryProvider(SummaryProviderProtocol):
                 for i in range(min(len(returned_sums), len(results))):
                     results[i] = returned_sums[i]
                     
+        except LLMBackendError:
+                    
+            raise
+                    
         except Exception:
             pass
             
@@ -586,6 +643,8 @@ class LLMTopicProvider(TopicProviderProtocol):
                 content = response.choices[0].message.content
                 if content:
                     all_raw_topics.extend([line.strip("- *") for line in content.split('\n') if line.strip()])
+            except LLMBackendError:
+                raise
             except Exception:
                 continue
         
@@ -597,6 +656,8 @@ class LLMTopicProvider(TopicProviderProtocol):
                 **kwargs
             )
             return completion.choices[0].message.parsed.topics
+        except LLMBackendError:
+            raise
         except Exception:
             return []
 
@@ -644,6 +705,10 @@ class LLMTopicProvider(TopicProviderProtocol):
                             
                     if best_idx != -1 and best_score > 0.8:
                         results[best_idx] = asm.topics
+
+        except LLMBackendError:
+
+            raise
 
         except Exception:
             pass
@@ -787,6 +852,10 @@ class LLMContextualProvider(ContextualProviderProtocol):
                     if best_match_idx != -1 and max_overlap > 0:
                         results[best_match_idx] = assignment.context
 
+        except LLMBackendError:
+
+            raise
+
         except Exception:
             pass
             
@@ -828,7 +897,7 @@ class LLMZettelProvider(ZettelProviderProtocol):
             chunks[i : i + batch_size] for i in range(0, len(chunks), batch_size)
         ]
 
-        for batch_index, batch in enumerate(batches):
+        for batch in batches:
             try:
                 previous_concepts = list(global_handle_map.keys())
                 system_prompt = self._build_zettel_system_prompt()
@@ -867,6 +936,10 @@ class LLMZettelProvider(ZettelProviderProtocol):
                             "children": evidence_children,
                         }
                     )
+
+            except LLMBackendError:
+
+                raise
 
             except Exception:
                 continue
